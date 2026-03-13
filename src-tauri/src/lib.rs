@@ -185,6 +185,41 @@ async fn merge_branch(repo_path: String, branch_name: String) -> Result<(), Stri
 }
 
 #[tauri::command]
+async fn stash_push(repo_path: String, message: Option<String>) -> Result<(), String> {
+    gitfast_core::stash::stash_push(&repo_path, message.as_deref())
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn stash_pop(repo_path: String) -> Result<(), String> {
+    gitfast_core::stash::stash_pop(&repo_path)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn open_terminal_at(repo_path: String) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        use std::process::Command;
+        let path_escaped = repo_path.replace('"', "\\\"");
+        let script = format!(
+            "tell application \"Terminal\" to do script \"cd \\\"{}\\\"\"",
+            path_escaped
+        );
+        let status = Command::new("osascript").args(["-e", &script]).status();
+        status.map_err(|e| e.to_string())?;
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = repo_path;
+        return Err("Opening terminal is only supported on macOS".to_string());
+    }
+    Ok(())
+}
+
+#[tauri::command]
 async fn open_repository(repo_path: String) -> Result<String, String> {
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
     let cache_dir = format!("{}/.gitfast", home);
@@ -239,6 +274,9 @@ pub fn run() {
             push,
             fetch_remote,
             open_repository,
+            stash_push,
+            stash_pop,
+            open_terminal_at,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -14,8 +14,10 @@
 		loadMoreCommits,
 		isLoading,
 	} from "$lib/store";
-	import { onMount, onDestroy } from "svelte";
+	import { onDestroy, untrack } from "svelte";
 	import type { BranchInfo, LanedCommit } from "$lib/types";
+
+	const MAX_CANVAS_PX = 16000;
 
 	const ROW_HEIGHT = 36;
 	const LANE_SPACING = 24;
@@ -83,6 +85,8 @@
 
 	let tooltipPos = $state({ x: 0, y: 0 });
 	let searchQuery = $state("");
+	let lastDrawnRef: LanedCommit[] = [];
+	let scrollThrottled = false;
 
 	const commitList = $derived.by(() => {
 		const all = $commits;
@@ -236,34 +240,32 @@
 		if (!container || list.length === 0 || initialized) return;
 
 		(async () => {
-			console.log("Pixi: starting init");
 			try {
 				const pixiApp = new Application();
+				const totalHeight = list.length * ROW_HEIGHT;
+				const canvasHeight = Math.min(
+					Math.max(600, totalHeight),
+					MAX_CANVAS_PX,
+				);
 				await pixiApp.init({
 					width: 240,
-					height: Math.max(600, list.length * ROW_HEIGHT),
+					height: canvasHeight,
 					background: 0x0d1117,
 					antialias: true,
 					resolution: window.devicePixelRatio || 1,
 					autoDensity: true,
 				});
 
-				// Append canvas to container
 				container.appendChild(pixiApp.canvas);
-				console.log("Pixi: init complete, canvas appended");
-
-				// Style the canvas
 				pixiApp.canvas.style.position = "absolute";
 				pixiApp.canvas.style.top = "0";
 				pixiApp.canvas.style.left = "0";
 
+				pixiApp.ticker.maxFPS = 60;
+				pixiApp.ticker.start();
+
 				app = pixiApp;
 				initialized = true;
-
-				// Draw initial graph
-				if (list.length > 0) {
-					drawGraph();
-				}
 			} catch (err) {
 				console.error("Pixi init failed:", err);
 				pixiFailed = true;
@@ -271,17 +273,48 @@
 		})();
 	});
 
-	function drawGraph() {
-		if (!app) return;
-		const list = commitList;
+	// Draw ONCE when commits change. NEVER on scroll.
+	$effect(() => {
+		const current = commitList;
+		if (current === lastDrawnRef) return;
+		if (current.length === 0) return;
+		if (!app || !initialized) return;
+		lastDrawnRef = current;
+		untrack(() => initAndDraw(current));
+	});
 
-		// Clear stage
+	function initAndDraw(list: LanedCommit[]) {
+		if (!app) return;
+		drawGraph(list);
+	}
+
+	function getLineG(
+		linesByColor: Map<number, Graphics>,
+		linesContainer: Container,
+		colorIdx: number,
+	): Graphics {
+		const idx = colorIdx % 8;
+		if (!linesByColor.has(idx)) {
+			const g = new Graphics();
+			linesByColor.set(idx, g);
+			linesContainer.addChild(g);
+		}
+		return linesByColor.get(idx)!;
+	}
+
+	function drawGraph(list: LanedCommit[]) {
+		if (!app) return;
+
+		app.ticker.stop();
+
 		app.stage.removeChildren();
 
 		const linesContainer = new Container();
 		const dotsContainer = new Container();
 		app.stage.addChild(linesContainer);
 		app.stage.addChild(dotsContainer);
+
+		const linesByColor = new Map<number, Graphics>();
 
 		// Compute lane states
 		const laneStates: Map<number, number>[] = [];
@@ -308,24 +341,18 @@
 			}
 		}
 
-		// Draw vertical lane lines
+		// Draw vertical lane lines — single Graphics per color (max 8)
 		for (let i = 0; i < list.length; i++) {
 			for (const [lane, colorIdx] of laneStates[i]) {
 				const x = LANE_OFFSET + lane * LANE_SPACING;
-				const y1 = i * ROW_HEIGHT;
-				const y2 = (i + 1) * ROW_HEIGHT;
-
-				const g = new Graphics();
-				g.moveTo(x, y1);
-				g.lineTo(x, y2);
-				g.stroke({
-					width: LINE_WIDTH,
-					color: LANE_COLORS[colorIdx % 8],
-				});
-				linesContainer.addChild(g);
+				const g = getLineG(linesByColor, linesContainer, colorIdx);
+				g.moveTo(x, i * ROW_HEIGHT);
+				g.lineTo(x, (i + 1) * ROW_HEIGHT);
 			}
+		}
 
-			// Draw bezier curves
+		// Draw bezier curves — same color Graphics
+		for (let i = 0; i < list.length; i++) {
 			for (const edge of list[i].edges) {
 				if (edge.edge_type !== "Straight") {
 					const fromX = LANE_OFFSET + edge.from_lane * LANE_SPACING;
@@ -333,7 +360,11 @@
 					const fromY = i * ROW_HEIGHT + ROW_HEIGHT / 2;
 					const toY = (i + 1) * ROW_HEIGHT + ROW_HEIGHT / 2;
 
-					const g = new Graphics();
+					const g = getLineG(
+						linesByColor,
+						linesContainer,
+						edge.color_index,
+					);
 					g.moveTo(fromX, fromY);
 					g.bezierCurveTo(
 						fromX,
@@ -343,18 +374,23 @@
 						toX,
 						toY,
 					);
-					g.stroke({
-						width: LINE_WIDTH,
-						color: LANE_COLORS[edge.color_index % 8],
-					});
-					linesContainer.addChild(g);
 				}
 			}
 		}
 
+		// Stroke all line Graphics at once
+		for (const [colorIdx, g] of linesByColor) {
+			g.stroke({
+				width: LINE_WIDTH,
+				color: LANE_COLORS[colorIdx],
+			});
+		}
+
 		// Draw dots on top
+		let maxLane = 0;
 		for (let i = 0; i < list.length; i++) {
 			const lc = list[i];
+			if (lc.lane > maxLane) maxLane = lc.lane;
 			const x = LANE_OFFSET + lc.lane * LANE_SPACING;
 			const y = i * ROW_HEIGHT + ROW_HEIGHT / 2;
 			const color = LANE_COLORS[lc.color_index % 8];
@@ -374,28 +410,39 @@
 			dotsContainer.addChild(dot);
 		}
 
+		const totalHeight = list.length * ROW_HEIGHT;
+		const canvasHeight = Math.min(totalHeight, MAX_CANVAS_PX);
+		app.renderer.resize(240, canvasHeight);
 		app.renderer.render(app.stage);
+		app.ticker.start();
+
+		console.log(
+			`[GitFast] Graph: ${list.length} commits, ${maxLane + 1} lanes`,
+		);
 	}
 
-	// Reactive redraw when commits change (after init)
-	$effect(() => {
-		const commitCount = commitList.length;
-
-		if (!initialized || !app || commitCount === 0) return;
-
-		// Resize renderer to fit all commits
-		const newHeight = commitCount * ROW_HEIGHT;
-		app.renderer.resize(240, newHeight);
-
-		drawGraph();
-	});
-
-	// Scroll sync: move stage when list scrolls
+	// Scroll: GPU stage.y transform only. Zero CPU. No render(), no drawGraph().
 	function onScroll() {
-		if (app && containerRef) {
-			app.stage.y = -containerRef.scrollTop;
-			app.renderer.render(app.stage);
-		}
+		if (!app || !containerRef) return;
+		const totalH = Math.max(1, commitList.length) * ROW_HEIGHT;
+		const ratio =
+			totalH > MAX_CANVAS_PX ? MAX_CANVAS_PX / totalH : 1;
+		app.stage.y = -containerRef.scrollTop * ratio;
+		checkInfiniteScroll();
+	}
+
+	function checkInfiniteScroll() {
+		if (scrollThrottled) return;
+		scrollThrottled = true;
+		setTimeout(() => {
+			scrollThrottled = false;
+			const el = containerRef;
+			if (!el) return;
+			const { scrollTop, scrollHeight, clientHeight } = el;
+			if (scrollHeight - scrollTop - clientHeight < 800) {
+				loadMoreCommits();
+			}
+		}, 150);
 	}
 
 	$effect(() => {
@@ -411,23 +458,6 @@
 			app = null;
 		}
 		initialized = false;
-	});
-
-	function handleScroll() {
-		const el = containerRef;
-		if (!el) return;
-		const { scrollTop, scrollHeight, clientHeight } = el;
-		const distFromBottom = scrollHeight - scrollTop - clientHeight;
-		if (distFromBottom < ROW_HEIGHT * 20) {
-			loadMoreCommits();
-		}
-	}
-
-	$effect(() => {
-		const el = containerRef;
-		if (!el) return;
-		el.addEventListener("scroll", handleScroll, { passive: true });
-		return () => el.removeEventListener("scroll", handleScroll);
 	});
 
 	const virtualItems = $derived.by(() => {

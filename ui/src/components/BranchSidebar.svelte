@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { branches, currentRepo, loadRepo } from '$lib/store';
+	import { branches, currentRepo, loadRepo, openCreateBranchForm } from '$lib/store';
 	import {
 		deleteBranch,
 		renameBranch,
@@ -61,6 +61,13 @@
 
 	const headBranch = $derived(branchList.find((b) => b.isHead));
 
+	$effect(() => {
+		if ($openCreateBranchForm) {
+			showCreateForm = true;
+			openCreateBranchForm.set(false);
+		}
+	});
+
 	function shortHash(hash: string): string {
 		return hash.slice(0, 7);
 	}
@@ -99,7 +106,10 @@
 		try {
 			await renameBranch(repoPath, contextMenu.branch.name, newName);
 			await loadRepo(repoPath);
-		} catch (err) { alert(err instanceof Error ? err.message : String(err)); }
+			showToast(`Branch renamed to ${newName}`, 'success');
+		} catch (err) {
+			showToast(err instanceof Error ? err.message : String(err), 'error');
+		}
 		hideContextMenu();
 	}
 
@@ -109,17 +119,27 @@
 		try {
 			await deleteBranch(repoPath, contextMenu.branch.name, false);
 			await loadRepo(repoPath);
-		} catch (err) { alert(err instanceof Error ? err.message : String(err)); }
+			showToast(`Branch ${contextMenu.branch.name} deleted`, 'success');
+		} catch (err) {
+			showToast(err instanceof Error ? err.message : String(err), 'error');
+		}
 		hideContextMenu();
 	}
 
 	async function handleMerge() {
 		if (!contextMenu || !repoPath || !contextMenu.isLocal) return;
-		if (contextMenu.branch.isHead) { alert('Cannot merge current branch into itself'); hideContextMenu(); return; }
+		if (contextMenu.branch.isHead) {
+			showToast('Cannot merge current branch into itself', 'error');
+			hideContextMenu();
+			return;
+		}
 		try {
 			await mergeBranch(repoPath, contextMenu.branch.name);
 			await loadRepo(repoPath);
-		} catch (err) { alert(err instanceof Error ? err.message : String(err)); }
+			showToast(`Merged ${contextMenu.branch.name} into current branch`, 'success');
+		} catch (err) {
+			showToast(err instanceof Error ? err.message : String(err), 'error');
+		}
 		hideContextMenu();
 	}
 

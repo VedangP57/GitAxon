@@ -7,6 +7,7 @@ pub mod errors;
 pub mod graph;
 pub mod remotes;
 pub mod staging;
+pub mod stash;
 
 // Types - cache
 pub use cache::{CommitNode, RepoRecord};

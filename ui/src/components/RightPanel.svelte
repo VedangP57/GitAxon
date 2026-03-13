@@ -205,7 +205,7 @@
 			.toUpperCase();
 	}
 
-	const commitSummary = $derived(() => {
+	const commitSummary = $derived.by(() => {
 		if (!$commitDiffFiles.length) return "";
 		const modified = $commitDiffFiles.filter(
 			(f) =>
@@ -440,7 +440,7 @@
 
 				{#if $commitDiffFiles.length > 0}
 					<div class="commit-summary-line">
-						{commitSummary()}
+						{commitSummary}
 					</div>
 				{/if}
 

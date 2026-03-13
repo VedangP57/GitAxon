@@ -42,6 +42,7 @@ const commitDiffFilesStore = writable<DiffFile[]>([]);
 const isLoadingStore = writable<boolean>(false);
 const isDiffLoadingStore = writable<boolean>(false);
 const errorStore = writable<string | null>(null);
+const hasMoreStore = writable<boolean>(true);
 
 // GitKraken 3-zone UI state
 export type CenterView = 'graph' | 'diff';
@@ -52,6 +53,7 @@ const centerViewStore = writable<CenterView>('graph');
 const diffFileStore = writable<DiffFile | null>(null);
 const diffModeStore = writable<DiffMode>('commit');
 const rightPanelModeStore = writable<RightPanelMode>('wip');
+const openCreateBranchFormStore = writable<boolean>(false);
 
 // Export as readable stores for components
 export const currentRepo = { subscribe: currentRepoStore.subscribe };
@@ -64,10 +66,12 @@ export const commitDiffFiles = { subscribe: commitDiffFilesStore.subscribe };
 export const isLoading = { subscribe: isLoadingStore.subscribe };
 export const isDiffLoading = { subscribe: isDiffLoadingStore.subscribe };
 export const error = { subscribe: errorStore.subscribe };
+export const hasMore = { subscribe: hasMoreStore.subscribe };
 export const centerView = { subscribe: centerViewStore.subscribe };
 export const diffFile = { subscribe: diffFileStore.subscribe };
 export const diffMode = { subscribe: diffModeStore.subscribe };
 export const rightPanelMode = { subscribe: rightPanelModeStore.subscribe };
+export const openCreateBranchForm = { subscribe: openCreateBranchFormStore.subscribe, set: openCreateBranchFormStore.set };
 
 export async function loadRepo(repoPath: string): Promise<void> {
 	const loadStart = Date.now();
@@ -89,6 +93,7 @@ export async function loadRepo(repoPath: string): Promise<void> {
 		commitsStore.set(commitsData);
 		branchesStore.set(branchesData);
 		statusStore.set(statusData);
+		hasMoreStore.set(true);
 		selectedCommitStore.set(null);
 		selectedFileStore.set(null);
 		commitDiffFilesStore.set([]);
@@ -124,19 +129,28 @@ export async function refreshStatus(): Promise<void> {
 	}
 }
 
+let isLoadingMore = false;
+
 export async function loadMoreCommits(): Promise<void> {
+	if (isLoadingMore || !get(hasMoreStore)) return;
 	const repo = get(currentRepoStore);
 	const currentCommits = get(commitsStore);
 	if (!repo) return;
-	isLoadingStore.set(true);
+	isLoadingMore = true;
 	errorStore.set(null);
 	try {
 		const more = await getCommits(repo, 200, currentCommits.length);
+		if (more.length === 0) {
+			hasMoreStore.set(false);
+			return;
+		}
 		commitsStore.update((c) => [...c, ...more]);
 	} catch (err) {
 		errorStore.set(err instanceof Error ? err.message : String(err));
 	} finally {
-		isLoadingStore.set(false);
+		setTimeout(() => {
+			isLoadingMore = false;
+		}, 300);
 	}
 }
 
@@ -242,6 +256,7 @@ export async function fetchFromRemote(remoteName: string = 'origin'): Promise<vo
 		]);
 		commitsStore.set(commitsData);
 		branchesStore.set(branchesData);
+		hasMoreStore.set(true);
 	} catch (err) {
 		errorStore.set(err instanceof Error ? err.message : String(err));
 		throw err;

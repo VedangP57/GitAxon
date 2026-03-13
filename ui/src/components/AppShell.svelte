@@ -13,8 +13,9 @@
 		branches,
 		goHome
 	} from '$lib/store';
-	import { pull, push } from '$lib/tauri';
+	import { pull, push, stashPush, stashPop, openTerminalAt } from '$lib/tauri';
 	import { showToast } from '$lib/toast';
+	import { openCreateBranchForm } from '$lib/store';
 
 	let repoName = $derived(
 		$currentRepo ? $currentRepo.split(/[/\\]/).filter(Boolean).pop() ?? 'Repository' : 'Repository'
@@ -119,6 +120,58 @@
 			showToast(e instanceof Error ? e.message : String(e), 'error');
 		}
 	}
+
+	async function onStash() {
+		const repo = $currentRepo;
+		if (!repo) return;
+		try {
+			await stashPush(repo);
+			await loadRepo(repo);
+			showToast('Changes stashed', 'success');
+		} catch (e) {
+			showToast(e instanceof Error ? e.message : String(e), 'error');
+		}
+	}
+
+	async function onPop() {
+		const repo = $currentRepo;
+		if (!repo) return;
+		try {
+			await stashPop(repo);
+			await loadRepo(repo);
+			showToast('Stash applied', 'success');
+		} catch (e) {
+			showToast(e instanceof Error ? e.message : String(e), 'error');
+		}
+	}
+
+	function onTerminal() {
+		const repo = $currentRepo;
+		if (!repo) {
+			showToast('No repository open', 'error');
+			return;
+		}
+		openTerminalAt(repo).catch((e) =>
+			showToast(e instanceof Error ? e.message : String(e), 'error')
+		);
+	}
+
+	function onUndo() {
+		showToast('Undo not implemented', 'info');
+	}
+
+	function onRedo() {
+		showToast('Redo not implemented', 'info');
+	}
+
+	let branchDropdownOpen = $state(false);
+	function toggleBranchDropdown() {
+		branchDropdownOpen = !branchDropdownOpen;
+	}
+	function openCreateBranch() {
+		openCreateBranchForm.set(true);
+		branchDropdownOpen = false;
+	}
 </script>
 
 <!-- svelte-ignore a11y_no_static_element_interactions -->
@@ -149,11 +202,11 @@
 
 		<!-- Center action buttons -->
 		<div class="tb-center">
-			<button class="tb-action-btn" title="Undo">
+			<button class="tb-action-btn" title="Undo" onclick={onUndo}>
 				<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7v6h6"/><path d="M21 17a9 9 0 0 0-9-9 9 9 0 0 0-6 2.3L3 13"/></svg>
 				<span>Undo</span>
 			</button>
-			<button class="tb-action-btn" title="Redo">
+			<button class="tb-action-btn" title="Redo" onclick={onRedo}>
 				<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 7v6h-6"/><path d="M3 17a9 9 0 0 1 9-9 9 9 0 0 1 6 2.3L21 13"/></svg>
 				<span>Redo</span>
 			</button>
@@ -167,20 +220,30 @@
 				<span>Push</span>
 			</button>
 			<div class="tb-divider"></div>
-			<button class="tb-action-btn" title="Branch">
-				<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="6" y1="3" x2="6" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/></svg>
-				<span>Branch ▾</span>
-			</button>
-			<button class="tb-action-btn" title="Stash">
+			<div class="tb-dropdown-wrap">
+				<button class="tb-action-btn" title="Branch" onclick={toggleBranchDropdown} aria-expanded={branchDropdownOpen} aria-haspopup="true">
+					<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="6" y1="3" x2="6" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/></svg>
+					<span>Branch ▾</span>
+				</button>
+				{#if branchDropdownOpen}
+					<!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
+					<div class="tb-dropdown-backdrop" onclick={() => (branchDropdownOpen = false)} role="presentation"></div>
+					<div class="tb-dropdown" role="menu">
+						<button class="tb-dropdown-item" onclick={openCreateBranch} role="menuitem">Create branch...</button>
+						<span class="tb-dropdown-hint">Switch/delete in left sidebar</span>
+					</div>
+				{/if}
+			</div>
+			<button class="tb-action-btn" title="Stash" onclick={onStash}>
 				<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="7" width="20" height="14" rx="2" ry="2"/><path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"/></svg>
 				<span>Stash</span>
 			</button>
-			<button class="tb-action-btn" title="Pop stash">
+			<button class="tb-action-btn" title="Pop stash" onclick={onPop}>
 				<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14"/><polyline points="19 12 12 5 5 12"/></svg>
 				<span>Pop</span>
 			</button>
 			<div class="tb-divider"></div>
-			<button class="tb-action-btn" title="Terminal">
+			<button class="tb-action-btn" title="Terminal" onclick={onTerminal}>
 				<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
 				<span>Terminal</span>
 			</button>
@@ -369,6 +432,49 @@
 		background: var(--border);
 		margin: 0 4px;
 		flex-shrink: 0;
+	}
+
+	.tb-dropdown-wrap {
+		position: relative;
+	}
+	.tb-dropdown-backdrop {
+		position: fixed;
+		inset: 0;
+		z-index: 99;
+	}
+	.tb-dropdown {
+		position: absolute;
+		top: 100%;
+		left: 0;
+		margin-top: 2px;
+		min-width: 200px;
+		padding: 4px;
+		background: var(--bg-tertiary);
+		border: 1px solid var(--border);
+		border-radius: 6px;
+		box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+		z-index: 100;
+	}
+	.tb-dropdown-item {
+		display: block;
+		width: 100%;
+		padding: 8px 12px;
+		background: none;
+		border: none;
+		color: var(--text-primary);
+		font-size: 12px;
+		text-align: left;
+		cursor: pointer;
+		border-radius: 4px;
+	}
+	.tb-dropdown-item:hover {
+		background: var(--bg-secondary);
+	}
+	.tb-dropdown-hint {
+		display: block;
+		padding: 6px 12px;
+		font-size: 10px;
+		color: var(--text-muted);
 	}
 
 	.tb-profile-btn {

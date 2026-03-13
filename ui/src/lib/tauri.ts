@@ -176,6 +176,18 @@ export async function mergeBranch(repoPath: string, branchName: string): Promise
 	await invoke('merge_branch', { repoPath, branchName });
 }
 
+export async function stashPush(repoPath: string, message?: string): Promise<void> {
+	await invoke('stash_push', { repoPath, message: message ?? null });
+}
+
+export async function stashPop(repoPath: string): Promise<void> {
+	await invoke('stash_pop', { repoPath });
+}
+
+export async function openTerminalAt(repoPath: string): Promise<void> {
+	await invoke('open_terminal_at', { repoPath });
+}
+
 export async function getRecentRepositories(
 	limit: number
 ): Promise<RepoRecord[]> {
