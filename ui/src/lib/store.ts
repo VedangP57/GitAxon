@@ -43,6 +43,16 @@ const isLoadingStore = writable<boolean>(false);
 const isDiffLoadingStore = writable<boolean>(false);
 const errorStore = writable<string | null>(null);
 
+// GitKraken 3-zone UI state
+export type CenterView = 'graph' | 'diff';
+export type DiffMode = 'working-tree' | 'staged' | 'commit';
+export type RightPanelMode = 'wip' | 'commit';
+
+const centerViewStore = writable<CenterView>('graph');
+const diffFileStore = writable<DiffFile | null>(null);
+const diffModeStore = writable<DiffMode>('commit');
+const rightPanelModeStore = writable<RightPanelMode>('wip');
+
 // Export as readable stores for components
 export const currentRepo = { subscribe: currentRepoStore.subscribe };
 export const commits = { subscribe: commitsStore.subscribe };
@@ -54,6 +64,10 @@ export const commitDiffFiles = { subscribe: commitDiffFilesStore.subscribe };
 export const isLoading = { subscribe: isLoadingStore.subscribe };
 export const isDiffLoading = { subscribe: isDiffLoadingStore.subscribe };
 export const error = { subscribe: errorStore.subscribe };
+export const centerView = { subscribe: centerViewStore.subscribe };
+export const diffFile = { subscribe: diffFileStore.subscribe };
+export const diffMode = { subscribe: diffModeStore.subscribe };
+export const rightPanelMode = { subscribe: rightPanelModeStore.subscribe };
 
 export async function loadRepo(repoPath: string): Promise<void> {
 	const loadStart = Date.now();
@@ -128,8 +142,9 @@ export async function loadMoreCommits(): Promise<void> {
 
 export async function selectCommit(commit: LanedCommit): Promise<void> {
 	selectedCommitStore.set(commit);
-	selectedFileStore.set(null);
 	commitDiffFilesStore.set([]);
+	// Do NOT change centerView — stay on graph
+	rightPanelModeStore.set('commit');
 
 	const repo = get(currentRepoStore);
 	if (!repo) return;
@@ -138,9 +153,6 @@ export async function selectCommit(commit: LanedCommit): Promise<void> {
 	try {
 		const files = await getDiffCommit(repo, commit.commit.hash);
 		commitDiffFilesStore.set(files);
-		if (files.length > 0) {
-			selectedFileStore.set(files[0]);
-		}
 	} catch (err) {
 		errorStore.set(err instanceof Error ? err.message : String(err));
 		commitDiffFilesStore.set([]);
@@ -149,8 +161,18 @@ export async function selectCommit(commit: LanedCommit): Promise<void> {
 	}
 }
 
-export function selectFile(file: DiffFile): void {
+export function selectFile(file: DiffFile, mode: DiffMode = 'commit'): void {
+	diffFileStore.set(file);
+	diffModeStore.set(mode);
+	centerViewStore.set('diff');
+	// Keep legacy store in sync for components not yet migrated
 	selectedFileStore.set(file);
+}
+
+export function closeDiff(): void {
+	centerViewStore.set('graph');
+	diffFileStore.set(null);
+	selectedFileStore.set(null);
 }
 
 export async function selectFileFromStaging(
@@ -160,12 +182,14 @@ export async function selectFileFromStaging(
 ): Promise<void> {
 	selectedCommitStore.set(null);
 	commitDiffFilesStore.set([]);
-	selectedFileStore.set({
+	const mode: DiffMode = isStaged ? 'staged' : 'working-tree';
+	const placeholder: DiffFile = {
 		old_path: filePath,
 		new_path: filePath,
 		status: 'Modified',
 		hunks: []
-	});
+	};
+	selectFile(placeholder, mode);
 	isDiffLoadingStore.set(true);
 	try {
 		const files = isStaged
@@ -175,13 +199,28 @@ export async function selectFileFromStaging(
 			(f) => (f.new_path ?? f.old_path ?? '') === filePath
 		);
 		if (match) {
-			selectedFileStore.set(match);
+			selectFile(match, mode);
 		}
 	} catch (err) {
 		errorStore.set(err instanceof Error ? err.message : String(err));
 	} finally {
 		isDiffLoadingStore.set(false);
 	}
+}
+
+export function goHome(): void {
+	currentRepoStore.set(null);
+	setStoredRepo(null);
+	commitsStore.set([]);
+	branchesStore.set([]);
+	statusStore.set([]);
+	selectedCommitStore.set(null);
+	selectedFileStore.set(null);
+	commitDiffFilesStore.set([]);
+	errorStore.set(null);
+	centerViewStore.set('graph');
+	diffFileStore.set(null);
+	rightPanelModeStore.set('wip');
 }
 
 export function clearSelection(): void {

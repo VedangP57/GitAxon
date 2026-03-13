@@ -12,7 +12,10 @@
 	let searchQuery = $state('');
 	let localOpen = $state(true);
 	let remotesOpen = $state(true);
-	let tagsOpen = $state(true);
+	let tagsOpen = $state(false);
+	let cloudPatchesOpen = $state(false);
+	let prOpen = $state(false);
+	let issuesOpen = $state(false);
 	let contextMenu = $state<{
 		x: number;
 		y: number;
@@ -25,6 +28,10 @@
 
 	const branchList = $derived($branches);
 	const repoPath = $derived($currentRepo);
+
+	const repoName = $derived(
+		$currentRepo ? $currentRepo.split(/[/\\]/).filter(Boolean).pop() ?? 'Repository' : 'Repository'
+	);
 
 	const filteredLocal = $derived(
 		branchList.filter(
@@ -68,10 +75,7 @@
 		} catch (err) {
 			const msg = err instanceof Error ? err.message : String(err);
 			if (msg.toLowerCase().includes('uncommitted changes')) {
-				showToast(
-					'Cannot checkout: you have uncommitted changes. Stage or stash them first.',
-					'error'
-				);
+				showToast('Cannot checkout: you have uncommitted changes. Stage or stash them first.', 'error');
 			} else {
 				showToast(msg, 'error');
 			}
@@ -91,47 +95,31 @@
 	async function handleRename() {
 		if (!contextMenu || !repoPath || !contextMenu.isLocal) return;
 		const newName = prompt('Rename branch to:', contextMenu.branch.name);
-		if (!newName || newName === contextMenu.branch.name) {
-			hideContextMenu();
-			return;
-		}
+		if (!newName || newName === contextMenu.branch.name) { hideContextMenu(); return; }
 		try {
 			await renameBranch(repoPath, contextMenu.branch.name, newName);
 			await loadRepo(repoPath);
-		} catch (err) {
-			alert(err instanceof Error ? err.message : String(err));
-		}
+		} catch (err) { alert(err instanceof Error ? err.message : String(err)); }
 		hideContextMenu();
 	}
 
 	async function handleDelete() {
 		if (!contextMenu || !repoPath || !contextMenu.isLocal) return;
-		if (!confirm(`Delete branch "${contextMenu.branch.name}"?`)) {
-			hideContextMenu();
-			return;
-		}
+		if (!confirm(`Delete branch "${contextMenu.branch.name}"?`)) { hideContextMenu(); return; }
 		try {
 			await deleteBranch(repoPath, contextMenu.branch.name, false);
 			await loadRepo(repoPath);
-		} catch (err) {
-			alert(err instanceof Error ? err.message : String(err));
-		}
+		} catch (err) { alert(err instanceof Error ? err.message : String(err)); }
 		hideContextMenu();
 	}
 
 	async function handleMerge() {
 		if (!contextMenu || !repoPath || !contextMenu.isLocal) return;
-		if (contextMenu.branch.isHead) {
-			alert('Cannot merge current branch into itself');
-			hideContextMenu();
-			return;
-		}
+		if (contextMenu.branch.isHead) { alert('Cannot merge current branch into itself'); hideContextMenu(); return; }
 		try {
 			await mergeBranch(repoPath, contextMenu.branch.name);
 			await loadRepo(repoPath);
-		} catch (err) {
-			alert(err instanceof Error ? err.message : String(err));
-		}
+		} catch (err) { alert(err instanceof Error ? err.message : String(err)); }
 		hideContextMenu();
 	}
 
@@ -148,18 +136,11 @@
 	}
 
 	async function submitCreateBranch() {
-		if (!repoPath || !createBranchName.trim()) {
-			showCreateForm = false;
-			return;
-		}
+		if (!repoPath || !createBranchName.trim()) { showCreateForm = false; return; }
 		const newBranchName = createBranchName.trim();
 		const fromBranch = createBranchFrom.trim() || 'HEAD';
 		try {
-			await invoke('create_branch', {
-				repoPath,
-				name: newBranchName,
-				fromRef: fromBranch
-			});
+			await invoke('create_branch', { repoPath, name: newBranchName, fromRef: fromBranch });
 			await invoke('checkout_branch', { repoPath, name: newBranchName });
 			await loadRepo(repoPath);
 			showToast(`Branch ${newBranchName} created and checked out`, 'success');
@@ -176,10 +157,7 @@
 	}
 
 	function handleKeydown(e: KeyboardEvent) {
-		if (e.key === 'Escape') {
-			hideContextMenu();
-			showCreateForm = false;
-		}
+		if (e.key === 'Escape') { hideContextMenu(); showCreateForm = false; }
 	}
 </script>
 
@@ -187,92 +165,91 @@
 
 <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions a11y_no_noninteractive_element_interactions -->
 <div class="sidebar" onclick={hideContextMenu} role="region" aria-label="Branch sidebar">
-	<div class="search-wrap">
-		<input
-			type="text"
-			class="search-input"
-			placeholder="Filter branches..."
-			bind:value={searchQuery}
-		/>
-	</div>
 
-	<!-- LOCAL BRANCHES -->
-	<div class="section">
-		<div class="section-header">
-			<button
-				type="button"
-				class="header-toggle"
-				onclick={() => (localOpen = !localOpen)}
-			>
-				<span class="chevron">{localOpen ? '▼' : '▶'}</span>
-				<span>LOCAL</span>
-			</button>
-			<button
-				class="add-btn"
-				onclick={() => openCreateForm('HEAD')}
-				title="Create branch"
-				type="button"
-			>
-				+
-			</button>
+	<!-- Repo info header -->
+	<div class="repo-header">
+		<div class="repo-row">
+			<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="row-icon"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
+			<span class="repo-label">repository</span>
+			<span class="repo-name">{repoName}</span>
 		</div>
-		{#if localOpen}
-			<div class="branch-list">
-				{#if filteredLocal.length === 0}
-					<div class="empty">
-						{searchQuery ? `No branches match '${searchQuery}'` : 'No local branches'}
-					</div>
-				{:else}
-				{#each filteredLocal as branch (branch.name)}
-					<div
-						class="branch-row"
-						class:current={branch.isHead}
-						onclick={() => onCheckout(branch)}
-						oncontextmenu={(e) => showContextMenu(e, branch, true)}
-						role="button"
-						tabindex="0"
-						onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), onCheckout(branch))}
-					>
-						{#if branch.isHead}
-							<span class="head-dot" title="Current branch"></span>
-						{/if}
-						<span class="branch-icon">○</span>
-						<span class="branch-name">{branch.name}</span>
-						<span class="branch-hash">{shortHash(branch.tipHash)}</span>
-						<button
-							class="branch-add-btn"
-							title="Create branch from {branch.name}"
-							type="button"
-							onclick={(e) => {
-								e.stopPropagation();
-								openCreateForm(branch.name);
-							}}
-						>
-							+
-						</button>
-					</div>
-				{/each}
-				{/if}
+		{#if headBranch}
+			<div class="repo-row">
+				<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="row-icon"><line x1="6" y1="3" x2="6" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/></svg>
+				<span class="repo-label">branch</span>
+				<span class="branch-current-name">{headBranch.name}</span>
 			</div>
 		{/if}
 	</div>
 
-	<!-- REMOTE BRANCHES -->
-	<div class="section">
-		<button
-			class="section-header"
-			onclick={() => (remotesOpen = !remotesOpen)}
-			type="button"
-		>
-			<span class="chevron">{remotesOpen ? '▼' : '▶'}</span>
-			<span>REMOTES (origin)</span>
-		</button>
-		{#if remotesOpen}
-			{#each Array.from(remoteGroups.entries()) as [remoteName, branches]}
-				<div class="remote-group">
-					<div class="remote-label">{remoteName}</div>
-					<div class="branch-list">
-						{#each branches as branch (branch.name)}
+	<!-- Scrollable section list -->
+	<div class="section-list">
+
+		<!-- ▼ LOCAL -->
+		<div class="section">
+			<div class="section-header-row">
+				<button class="section-toggle" onclick={() => (localOpen = !localOpen)}>
+					<span class="chevron">{localOpen ? '▼' : '▶'}</span>
+					<span class="section-label">LOCAL</span>
+					<span class="count-pill">{filteredLocal.length}</span>
+				</button>
+				<button class="section-add" onclick={() => openCreateForm('HEAD')} title="New branch">+</button>
+			</div>
+			{#if localOpen}
+				<div class="search-wrap">
+					<input
+						type="text"
+						class="search-input"
+						placeholder="Filter branches..."
+						bind:value={searchQuery}
+					/>
+				</div>
+				<div class="branch-list">
+					{#if filteredLocal.length === 0}
+						<div class="empty">{searchQuery ? `No match for '${searchQuery}'` : 'No local branches'}</div>
+					{:else}
+						{#each filteredLocal as branch (branch.name)}
+							<div
+								class="branch-row"
+								class:is-head={branch.isHead}
+								onclick={() => onCheckout(branch)}
+								oncontextmenu={(e) => showContextMenu(e, branch, true)}
+								role="button"
+								tabindex="0"
+								onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), onCheckout(branch))}
+							>
+								{#if branch.isHead}
+									<span class="head-dot" title="Current branch"></span>
+								{:else}
+									<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="branch-icon"><line x1="6" y1="3" x2="6" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/></svg>
+								{/if}
+								<span class="branch-name">{branch.name}</span>
+								<span class="branch-hash">{shortHash(branch.tipHash)}</span>
+								<button
+									class="checkout-btn"
+									title="Create branch from {branch.name}"
+									type="button"
+									onclick={(e) => { e.stopPropagation(); openCreateForm(branch.name); }}
+								>+</button>
+							</div>
+						{/each}
+					{/if}
+				</div>
+			{/if}
+		</div>
+
+		<!-- ▼ REMOTE -->
+		<div class="section">
+			<button class="section-header-row full-btn" onclick={() => (remotesOpen = !remotesOpen)}>
+				<span class="chevron">{remotesOpen ? '▼' : '▶'}</span>
+				<span class="section-label">REMOTE</span>
+				<span class="count-pill">{filteredRemote.length}</span>
+			</button>
+			{#if remotesOpen}
+				{#each Array.from(remoteGroups.entries()) as [remoteName, remoteBranches]}
+					<div class="remote-group">
+						<div class="remote-label">{remoteName}</div>
+						{#each remoteBranches as branch (branch.name)}
 							<div
 								class="branch-row remote"
 								title="Create local branch from remote?"
@@ -282,36 +259,72 @@
 								role="button"
 								tabindex="0"
 							>
-								<span class="branch-icon">○</span>
+								<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="branch-icon"><line x1="6" y1="3" x2="6" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/></svg>
 								<span class="branch-name">{branch.name.replace(remoteName + '/', '')}</span>
 								<span class="branch-hash">{shortHash(branch.tipHash)}</span>
 							</div>
 						{/each}
 					</div>
-				</div>
-			{/each}
-			{#if filteredRemote.length === 0}
-				<div class="empty">No remote branches</div>
+				{/each}
+				{#if filteredRemote.length === 0}
+					<div class="empty">No remote branches</div>
+				{/if}
 			{/if}
-		{/if}
+		</div>
+
+		<!-- ▼ CLOUD PATCHES -->
+		<div class="section">
+			<button class="section-header-row full-btn" onclick={() => (cloudPatchesOpen = !cloudPatchesOpen)}>
+				<span class="chevron">{cloudPatchesOpen ? '▼' : '▶'}</span>
+				<span class="section-label">CLOUD PATCHES</span>
+				<span class="count-pill">0</span>
+			</button>
+		</div>
+
+		<!-- ▼ PULL REQUESTS -->
+		<div class="section">
+			<button class="section-header-row full-btn" onclick={() => (prOpen = !prOpen)}>
+				<span class="chevron">{prOpen ? '▼' : '▶'}</span>
+				<span class="section-label">PULL REQUESTS</span>
+				<span class="count-pill">0</span>
+			</button>
+		</div>
+
+		<!-- ▼ ISSUES -->
+		<div class="section">
+			<button class="section-header-row full-btn" onclick={() => (issuesOpen = !issuesOpen)}>
+				<span class="chevron">{issuesOpen ? '▼' : '▶'}</span>
+				<span class="section-label">ISSUES</span>
+				<span class="count-pill">0</span>
+			</button>
+		</div>
+
+		<!-- ▼ TAGS -->
+		<div class="section">
+			<button class="section-header-row full-btn" onclick={() => (tagsOpen = !tagsOpen)}>
+				<span class="chevron">{tagsOpen ? '▼' : '▶'}</span>
+				<span class="section-label">TAGS</span>
+				<span class="count-pill">0</span>
+			</button>
+			{#if tagsOpen}
+				<div class="empty">No tags</div>
+			{/if}
+		</div>
+
 	</div>
 
-	<!-- TAGS -->
-	<div class="section">
-		<button
-			class="section-header"
-			onclick={() => (tagsOpen = !tagsOpen)}
-			type="button"
-		>
-			<span class="chevron">{tagsOpen ? '▼' : '▶'}</span>
-			<span>TAGS</span>
+	<!-- Bottom action icons -->
+	<div class="sidebar-bottom">
+		<button class="bottom-icon-btn" title="Notifications">
+			<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
 		</button>
-		{#if tagsOpen}
-			<div class="empty">No tags</div>
-		{/if}
+		<button class="bottom-icon-btn" title="Settings">
+			<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+		</button>
 	</div>
 </div>
 
+<!-- Create branch modal -->
 {#if showCreateForm}
 	<!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
 	<div class="modal-overlay" onclick={() => (showCreateForm = false)} role="presentation">
@@ -320,20 +333,11 @@
 			<h3>Create Branch</h3>
 			<label>
 				Branch name
-				<input
-					type="text"
-					bind:value={createBranchName}
-					placeholder="branch-name"
-					onkeydown={(e) => e.key === 'Enter' && submitCreateBranch()}
-				/>
+				<input type="text" bind:value={createBranchName} placeholder="branch-name" onkeydown={(e) => e.key === 'Enter' && submitCreateBranch()} />
 			</label>
 			<label>
 				From
-				<input
-					type="text"
-					bind:value={createBranchFrom}
-					placeholder="HEAD or branch name"
-				/>
+				<input type="text" bind:value={createBranchFrom} placeholder="HEAD or branch name" />
 			</label>
 			<div class="modal-actions">
 				<button type="button" onclick={() => (showCreateForm = false)}>Cancel</button>
@@ -343,14 +347,11 @@
 	</div>
 {/if}
 
+<!-- Context menu -->
 {#if contextMenu}
 	<!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
-	<div class="context-menu-backdrop" onclick={hideContextMenu} role="presentation"></div>
-	<div
-		class="context-menu"
-		style="left: {contextMenu.x}px; top: {contextMenu.y}px;"
-		role="menu"
-	>
+	<div class="ctx-backdrop" onclick={hideContextMenu} role="presentation"></div>
+	<div class="ctx-menu" style="left: {contextMenu.x}px; top: {contextMenu.y}px;" role="menu">
 		{#if contextMenu.isLocal}
 			<button type="button" onclick={handleRename} role="menuitem">Rename</button>
 			<button type="button" onclick={handleDelete} role="menuitem">Delete</button>
@@ -370,125 +371,188 @@
 		background: var(--bg-secondary);
 		color: var(--text-primary);
 		overflow: hidden;
+		user-select: none;
 	}
 
-	.search-wrap {
-		padding: 8px 12px;
+	/* ── Repo header ── */
+	.repo-header {
+		padding: 10px 12px 8px;
+		border-bottom: 1px solid var(--border);
 		flex-shrink: 0;
 	}
 
-	.search-input {
-		width: 100%;
-		padding: 6px 10px;
-		font-size: 12px;
-		background: var(--bg-tertiary);
-		border: 1px solid var(--border);
-		border-radius: 6px;
-		color: var(--text-primary);
+	.repo-row {
+		display: flex;
+		align-items: center;
+		gap: 6px;
+		height: 20px;
 	}
-	.search-input::placeholder {
+
+	.row-icon {
 		color: var(--text-muted);
+		flex-shrink: 0;
+	}
+
+	.repo-label {
+		font-size: 10px;
+		color: var(--text-muted);
+		text-transform: lowercase;
+		letter-spacing: 0.05em;
+		flex-shrink: 0;
+	}
+
+	.repo-name {
+		font-size: 12px;
+		font-weight: 600;
+		color: var(--text-primary);
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
+	.branch-current-name {
+		font-size: 12px;
+		color: var(--accent-green);
+		font-weight: 500;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
+	/* ── Section list ── */
+	.section-list {
+		flex: 1;
+		overflow-y: auto;
+		min-height: 0;
 	}
 
 	.section {
-		flex-shrink: 0;
+		border-bottom: 1px solid var(--border);
 	}
 
-	.section-header {
+	.section-header-row {
 		display: flex;
 		align-items: center;
 		gap: 6px;
 		width: 100%;
-		padding: 8px 12px;
+		height: 30px;
+		padding: 0 10px 0 8px;
 		background: none;
 		border: none;
-		color: var(--text-muted);
-		font-size: 11px;
-		letter-spacing: 0.08em;
-		text-transform: uppercase;
 		cursor: pointer;
 		text-align: left;
 	}
+	.section-header-row:hover { background: rgba(255,255,255,0.03); }
 
-	.section-header:hover {
-		color: var(--text-secondary);
+	.full-btn {
+		display: flex;
 	}
 
-	.header-toggle {
+	.section-toggle {
 		flex: 1;
 		display: flex;
 		align-items: center;
 		gap: 6px;
-		padding: 0;
 		background: none;
 		border: none;
+		cursor: pointer;
 		color: inherit;
 		font: inherit;
-		letter-spacing: inherit;
-		text-transform: inherit;
-		text-align: left;
-		cursor: pointer;
+		padding: 0;
 	}
 
 	.chevron {
-		font-size: 10px;
-		opacity: 0.8;
+		font-size: 9px;
+		color: var(--text-muted);
 	}
 
-	.add-btn {
-		margin-left: auto;
-		padding: 2px 8px;
+	.section-label {
+		font-size: 10px;
+		font-weight: 600;
+		color: var(--text-muted);
+		letter-spacing: 0.08em;
+		text-transform: uppercase;
+		flex: 1;
+		text-align: left;
+	}
+
+	.count-pill {
+		font-size: 10px;
+		padding: 1px 6px;
+		background: var(--bg-tertiary);
+		border: 1px solid var(--border);
+		border-radius: 8px;
+		color: var(--text-muted);
+	}
+
+	.section-add {
+		width: 18px;
+		height: 18px;
+		display: flex;
+		align-items: center;
+		justify-content: center;
 		font-size: 14px;
+		background: var(--bg-tertiary);
+		border: 1px solid var(--border);
+		border-radius: 3px;
+		color: var(--text-muted);
+		cursor: pointer;
+		line-height: 1;
+	}
+	.section-add:hover { color: var(--accent-green); border-color: var(--accent-green); }
+
+	/* ── Search ── */
+	.search-wrap {
+		padding: 4px 8px 6px;
+	}
+
+	.search-input {
+		width: 100%;
+		padding: 4px 8px;
+		font-size: 11px;
 		background: var(--bg-tertiary);
 		border: 1px solid var(--border);
 		border-radius: 4px;
 		color: var(--text-primary);
-		cursor: pointer;
 	}
-	.add-btn:hover {
-		background: var(--border);
-	}
+	.search-input::placeholder { color: var(--text-muted); }
+	.search-input:focus { outline: none; border-color: var(--accent-blue); }
 
-	.branch-list {
-		overflow-y: auto;
-	}
+	/* ── Branch rows ── */
+	.branch-list { padding: 2px 0 4px; }
 
 	.branch-row {
 		display: flex;
 		align-items: center;
-		gap: 8px;
-		height: 28px;
-		padding: 0 12px;
-		font-size: 13px;
+		gap: 6px;
+		height: 26px;
+		padding: 0 8px;
+		font-size: 12px;
 		cursor: pointer;
-		transition: background-color 80ms ease;
+		transition: background 0.08s;
 	}
+	.branch-row:hover { background: var(--bg-tertiary); }
 
-	.branch-row:hover {
-		background: var(--bg-tertiary);
-	}
-
-	.branch-row.current {
-		background: #1f2d1f;
+	.branch-row.is-head {
+		background: rgba(63,185,80,0.08);
 		color: var(--accent-green);
 		font-weight: 600;
 	}
+	.branch-row.is-head:hover { background: rgba(63,185,80,0.14); }
 
-	.branch-row.remote {
-		color: #8b949e;
-	}
+	.branch-row.remote { color: var(--text-secondary); }
 
 	.head-dot {
-		width: 6px;
-		height: 6px;
+		width: 7px;
+		height: 7px;
 		border-radius: 50%;
 		background: var(--accent-green);
 		flex-shrink: 0;
+		box-shadow: 0 0 4px var(--accent-green);
 	}
 
 	.branch-icon {
-		font-size: 12px;
-		opacity: 0.7;
+		color: var(--text-muted);
 		flex-shrink: 0;
 	}
 
@@ -501,59 +565,82 @@
 	}
 
 	.branch-hash {
-		font-size: 11px;
+		font-size: 10px;
 		color: var(--text-muted);
-		font-family: ui-monospace, monospace;
+		font-family: 'JetBrains Mono', ui-monospace, monospace;
 		flex-shrink: 0;
 	}
 
-	.branch-add-btn {
-		margin-left: auto;
+	.checkout-btn {
 		opacity: 0;
-		padding: 2px 6px;
-		font-size: 12px;
+		width: 18px;
+		height: 18px;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		font-size: 13px;
+		font-weight: bold;
 		background: var(--bg-tertiary);
 		border: 1px solid var(--border);
-		border-radius: 4px;
-		color: var(--text-primary);
+		border-radius: 3px;
+		color: var(--text-muted);
 		cursor: pointer;
 		flex-shrink: 0;
+		transition: opacity 0.08s;
 	}
-	.branch-row:hover .branch-add-btn {
-		opacity: 1;
-	}
-	.branch-add-btn:hover {
-		background: var(--accent-green);
-		color: #0d1117;
-		border-color: var(--accent-green);
-	}
+	.branch-row:hover .checkout-btn { opacity: 1; }
+	.checkout-btn:hover { color: var(--accent-green); border-color: var(--accent-green); }
 
-	.remote-group {
-		padding-left: 12px;
-	}
-
+	.remote-group { padding-left: 8px; }
 	.remote-label {
-		padding: 4px 12px;
+		padding: 4px 8px;
 		font-size: 10px;
 		color: var(--text-muted);
 		text-transform: uppercase;
-		letter-spacing: 0.05em;
+		letter-spacing: 0.04em;
 	}
 
 	.empty {
-		padding: 8px 12px;
-		font-size: 12px;
+		padding: 6px 12px;
+		font-size: 11px;
 		color: var(--text-muted);
 	}
 
-	.context-menu-backdrop {
+	/* ── Bottom bar ── */
+	.sidebar-bottom {
+		display: flex;
+		align-items: center;
+		justify-content: flex-end;
+		gap: 4px;
+		padding: 6px 8px;
+		border-top: 1px solid var(--border);
+		flex-shrink: 0;
+	}
+
+	.bottom-icon-btn {
+		width: 26px;
+		height: 26px;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		background: transparent;
+		border: 1px solid transparent;
+		border-radius: 4px;
+		color: var(--text-muted);
+		cursor: pointer;
+		transition: color 0.1s, background 0.1s;
+	}
+	.bottom-icon-btn:hover { color: var(--text-primary); background: var(--bg-tertiary); border-color: var(--border); }
+
+	/* ── Context menu ── */
+	.ctx-backdrop {
 		position: fixed;
 		inset: 0;
 		z-index: 999;
 		background: transparent;
 	}
 
-	.context-menu {
+	.ctx-menu {
 		position: fixed;
 		z-index: 1000;
 		min-width: 180px;
@@ -561,57 +648,46 @@
 		background: var(--bg-tertiary);
 		border: 1px solid var(--border);
 		border-radius: 6px;
-		box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+		box-shadow: 0 8px 24px rgba(0,0,0,0.5);
 	}
 
-	.context-menu button {
+	.ctx-menu button {
 		display: block;
 		width: 100%;
-		padding: 8px 12px;
+		padding: 7px 12px;
 		background: none;
 		border: none;
 		color: var(--text-primary);
-		font-size: 13px;
+		font-size: 12px;
 		text-align: left;
 		cursor: pointer;
 		border-radius: 4px;
 	}
+	.ctx-menu button:hover { background: var(--bg-secondary); }
 
-	.context-menu button:hover {
-		background: var(--bg-secondary);
-	}
-
+	/* ── Modal ── */
 	.modal-overlay {
 		position: fixed;
 		inset: 0;
 		z-index: 1001;
-		background: rgba(0, 0, 0, 0.5);
+		background: rgba(0,0,0,0.6);
 		display: flex;
 		align-items: center;
 		justify-content: center;
-		animation: modal-fade-in 0.15s ease;
+		animation: fadeIn 0.15s ease;
 	}
-	@keyframes modal-fade-in {
-		from {
-			opacity: 0;
-		}
-		to {
-			opacity: 1;
-		}
-	}
+	@keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
 
 	.modal {
 		background: var(--bg-secondary);
 		border: 1px solid var(--border);
 		border-radius: 8px;
-		padding: 20px;
+		padding: 24px;
 		min-width: 320px;
+		box-shadow: 0 16px 48px rgba(0,0,0,0.6);
 	}
 
-	.modal h3 {
-		margin: 0 0 16px 0;
-		font-size: 16px;
-	}
+	.modal h3 { margin: 0 0 16px; font-size: 15px; }
 
 	.modal label {
 		display: block;
@@ -631,6 +707,7 @@
 		color: var(--text-primary);
 		font-size: 13px;
 	}
+	.modal input:focus { outline: none; border-color: var(--accent-blue); }
 
 	.modal-actions {
 		display: flex;
@@ -646,15 +723,14 @@
 		cursor: pointer;
 		border: 1px solid var(--border);
 	}
-
 	.modal-actions button:first-child {
 		background: var(--bg-tertiary);
 		color: var(--text-primary);
 	}
-
 	.modal-actions button:last-child {
 		background: var(--accent-green);
-		color: white;
+		color: #0d1117;
 		border-color: var(--accent-green);
+		font-weight: 600;
 	}
 </style>

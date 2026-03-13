@@ -1,21 +1,21 @@
 <script lang="ts">
-	import { Application, Graphics, Container } from 'pixi.js';
+	import { Application, Graphics, Container } from "pixi.js";
 	import {
 		Virtualizer,
 		observeElementRect,
 		observeElementOffset,
-		elementScroll
-	} from '@tanstack/virtual-core';
+		elementScroll,
+	} from "@tanstack/virtual-core";
 	import {
 		commits,
 		branches,
 		selectedCommit,
 		selectCommit,
 		loadMoreCommits,
-		isLoading
-	} from '$lib/store';
-	import { onMount, onDestroy } from 'svelte';
-	import type { BranchInfo, LanedCommit } from '$lib/types';
+		isLoading,
+	} from "$lib/store";
+	import { onMount, onDestroy } from "svelte";
+	import type { BranchInfo, LanedCommit } from "$lib/types";
 
 	const ROW_HEIGHT = 36;
 	const LANE_SPACING = 24;
@@ -25,12 +25,18 @@
 	const CANVAS_WIDTH = 240;
 
 	const LANE_COLORS = [
-		0x58a6ff, 0x3fb950, 0xd29922, 0xbc8cff,
-		0xf85149, 0x39d353, 0xff7b72, 0x79c0ff
+		0x8b949e, 0x3fb950, 0xd29922, 0xbc8cff, 0xf85149, 0x39d353, 0xff7b72,
+		0xadbac7,
 	];
 	const LANE_COLORS_CSS = [
-		'#58a6ff', '#3fb950', '#d29922', '#bc8cff',
-		'#f85149', '#39d353', '#ff7b72', '#79c0ff'
+		"#8b949e",
+		"#3fb950",
+		"#d29922",
+		"#bc8cff",
+		"#f85149",
+		"#39d353",
+		"#ff7b72",
+		"#adbac7",
 	];
 
 	function getLaneX(lane: number): number {
@@ -39,7 +45,7 @@
 
 	function formatRelativeTime(timestamp: number): string {
 		const sec = Math.floor((Date.now() - timestamp * 1000) / 1000);
-		if (sec < 60) return 'just now';
+		if (sec < 60) return "just now";
 		if (sec < 3600) return `${Math.floor(sec / 60)} min ago`;
 		if (sec < 86400) return `${Math.floor(sec / 3600)} hours ago`;
 		if (sec < 2592000) return `${Math.floor(sec / 86400)} days ago`;
@@ -50,14 +56,14 @@
 	function formatTooltipDate(timestamp: number): string {
 		const d = new Date(timestamp * 1000);
 		const date = d.toLocaleDateString(undefined, {
-			month: 'long',
-			day: 'numeric',
-			year: 'numeric'
+			month: "long",
+			day: "numeric",
+			year: "numeric",
 		});
 		const time = d.toLocaleTimeString(undefined, {
-			hour: 'numeric',
-			minute: '2-digit',
-			hour12: true
+			hour: "numeric",
+			minute: "2-digit",
+			hour12: true,
 		});
 		return `${date} at ${time}`;
 	}
@@ -68,12 +74,15 @@
 	let initialized = $state(false);
 	let pixiFailed = $state(false);
 	let fallbackCanvas = $state<HTMLCanvasElement | null>(null);
-	let virtualizer = $state<Virtualizer<HTMLDivElement, HTMLDivElement> | null>(null);
+	let virtualizer = $state<Virtualizer<
+		HTMLDivElement,
+		HTMLDivElement
+	> | null>(null);
 	let virtualizerVersion = $state(0);
 	let tooltipCommit = $state<LanedCommit | null>(null);
 
 	let tooltipPos = $state({ x: 0, y: 0 });
-	let searchQuery = $state('');
+	let searchQuery = $state("");
 
 	const commitList = $derived.by(() => {
 		const all = $commits;
@@ -84,7 +93,7 @@
 				lc.commit.message.toLowerCase().includes(q) ||
 				lc.commit.author_name.toLowerCase().includes(q) ||
 				lc.commit.hash.toLowerCase().includes(q) ||
-				lc.commit.short_hash.toLowerCase().includes(q)
+				lc.commit.short_hash.toLowerCase().includes(q),
 		);
 	});
 	const branchList = $derived($branches);
@@ -119,11 +128,11 @@
 
 			// Update active lanes based on edges
 			for (const edge of lc.edges) {
-				if (edge.edge_type === 'Straight') {
+				if (edge.edge_type === "Straight") {
 					active.set(edge.to_lane, edge.color_index);
-				} else if (edge.edge_type === 'Fork') {
+				} else if (edge.edge_type === "Fork") {
 					active.set(edge.to_lane, edge.color_index);
-				} else if (edge.edge_type === 'Merge') {
+				} else if (edge.edge_type === "Merge") {
 					// Merged branch ends here
 					active.delete(edge.to_lane);
 					// Main lane continues
@@ -156,7 +165,6 @@
 		return remap;
 	});
 
-
 	$effect(() => {
 		const el = containerRef;
 		const list = commitList;
@@ -179,7 +187,7 @@
 					queueMicrotask(() => {
 						virtualizerVersion++;
 					});
-				}
+				},
 			});
 			virtualizer = v;
 			v._willUpdate();
@@ -199,7 +207,7 @@
 					queueMicrotask(() => {
 						virtualizerVersion++;
 					});
-				}
+				},
 			});
 			v._willUpdate();
 		}
@@ -228,7 +236,7 @@
 		if (!container || list.length === 0 || initialized) return;
 
 		(async () => {
-			console.log('Pixi: starting init');
+			console.log("Pixi: starting init");
 			try {
 				const pixiApp = new Application();
 				await pixiApp.init({
@@ -237,17 +245,17 @@
 					background: 0x0d1117,
 					antialias: true,
 					resolution: window.devicePixelRatio || 1,
-					autoDensity: true
+					autoDensity: true,
 				});
 
 				// Append canvas to container
 				container.appendChild(pixiApp.canvas);
-				console.log('Pixi: init complete, canvas appended');
+				console.log("Pixi: init complete, canvas appended");
 
 				// Style the canvas
-				pixiApp.canvas.style.position = 'absolute';
-				pixiApp.canvas.style.top = '0';
-				pixiApp.canvas.style.left = '0';
+				pixiApp.canvas.style.position = "absolute";
+				pixiApp.canvas.style.top = "0";
+				pixiApp.canvas.style.left = "0";
 
 				app = pixiApp;
 				initialized = true;
@@ -257,7 +265,7 @@
 					drawGraph();
 				}
 			} catch (err) {
-				console.error('Pixi init failed:', err);
+				console.error("Pixi init failed:", err);
 				pixiFailed = true;
 			}
 		})();
@@ -267,7 +275,7 @@
 		if (!app) return;
 		const list = commitList;
 
-		console.log('Pixi: drawing', list.length, 'commits');
+		console.log("Pixi: drawing", list.length, "commits");
 
 		// Clear stage
 		app.stage.removeChildren();
@@ -287,9 +295,12 @@
 			laneStates.push(new Map(active));
 
 			for (const edge of lc.edges) {
-				if (edge.edge_type === 'Straight' || edge.edge_type === 'Fork') {
+				if (
+					edge.edge_type === "Straight" ||
+					edge.edge_type === "Fork"
+				) {
 					active.set(edge.to_lane, edge.color_index);
-				} else if (edge.edge_type === 'Merge') {
+				} else if (edge.edge_type === "Merge") {
 					active.delete(edge.to_lane);
 					active.set(edge.from_lane, lc.color_index);
 				}
@@ -309,13 +320,16 @@
 				const g = new Graphics();
 				g.moveTo(x, y1);
 				g.lineTo(x, y2);
-				g.stroke({ width: LINE_WIDTH, color: LANE_COLORS[colorIdx % 8] });
+				g.stroke({
+					width: LINE_WIDTH,
+					color: LANE_COLORS[colorIdx % 8],
+				});
 				linesContainer.addChild(g);
 			}
 
 			// Draw bezier curves
 			for (const edge of list[i].edges) {
-				if (edge.edge_type !== 'Straight') {
+				if (edge.edge_type !== "Straight") {
 					const fromX = LANE_OFFSET + edge.from_lane * LANE_SPACING;
 					const toX = LANE_OFFSET + edge.to_lane * LANE_SPACING;
 					const fromY = i * ROW_HEIGHT + ROW_HEIGHT / 2;
@@ -329,11 +343,11 @@
 						toX,
 						toY - ROW_HEIGHT * 0.6,
 						toX,
-						toY
+						toY,
 					);
 					g.stroke({
 						width: LINE_WIDTH,
-						color: LANE_COLORS[edge.color_index % 8]
+						color: LANE_COLORS[edge.color_index % 8],
 					});
 					linesContainer.addChild(g);
 				}
@@ -353,17 +367,17 @@
 			dot.circle(x, y, DOT_RADIUS);
 			dot.fill({ color });
 
-			dot.eventMode = 'static';
-			dot.cursor = 'pointer';
-			dot.on('pointerover', () => dot.scale.set(1.3));
-			dot.on('pointerout', () => dot.scale.set(1.0));
-			dot.on('pointertap', () => selectCommit(lc));
+			dot.eventMode = "static";
+			dot.cursor = "pointer";
+			dot.on("pointerover", () => dot.scale.set(1.3));
+			dot.on("pointerout", () => dot.scale.set(1.0));
+			dot.on("pointertap", () => selectCommit(lc));
 
 			dotsContainer.addChild(dot);
 		}
 
 		app.renderer.render(app.stage);
-		console.log('Pixi: draw complete');
+		console.log("Pixi: draw complete");
 	}
 
 	// Reactive redraw when commits change (after init)
@@ -390,8 +404,8 @@
 	$effect(() => {
 		const el = containerRef;
 		if (!el || !app) return;
-		el.addEventListener('scroll', onScroll, { passive: true });
-		return () => el.removeEventListener('scroll', onScroll);
+		el.addEventListener("scroll", onScroll, { passive: true });
+		return () => el.removeEventListener("scroll", onScroll);
 	});
 
 	onDestroy(() => {
@@ -415,8 +429,8 @@
 	$effect(() => {
 		const el = containerRef;
 		if (!el) return;
-		el.addEventListener('scroll', handleScroll, { passive: true });
-		return () => el.removeEventListener('scroll', handleScroll);
+		el.addEventListener("scroll", handleScroll, { passive: true });
+		return () => el.removeEventListener("scroll", handleScroll);
 	});
 
 	const virtualItems = $derived.by(() => {
@@ -430,7 +444,7 @@
 				start: i * ROW_HEIGHT,
 				end: (i + 1) * ROW_HEIGHT,
 				size: ROW_HEIGHT,
-				lane: 0
+				lane: 0,
 			}));
 		}
 		return items;
@@ -450,7 +464,7 @@
 			{#if searchQuery}
 				<button
 					class="search-clear"
-					onclick={() => (searchQuery = '')}
+					onclick={() => (searchQuery = "")}
 					title="Clear search"
 					type="button"
 				>
@@ -470,15 +484,18 @@
 			<div class="empty-text">No commits found</div>
 		</div>
 	{:else}
-		<div
-			class="scroll-container"
-			bind:this={containerRef}
-			role="list"
-		>
+		<div class="scroll-container" bind:this={containerRef} role="list">
 			<div class="scroll-content" style="height: {totalHeight}px;">
 				{#if pixiFailed}
-					<div class="canvas-col" style="height: {totalHeight}px; position: relative;">
-						<canvas bind:this={fallbackCanvas} width={240} height={totalHeight}></canvas>
+					<div
+						class="canvas-col"
+						style="height: {totalHeight}px; position: relative;"
+					>
+						<canvas
+							bind:this={fallbackCanvas}
+							width={240}
+							height={totalHeight}
+						></canvas>
 					</div>
 				{:else}
 					<div
@@ -487,58 +504,76 @@
 						style="height: {totalHeight}px; position: relative;"
 					></div>
 				{/if}
-				<div class="list-col" style="height: {totalHeight}px; position: relative;">
+				<div
+					class="list-col"
+					style="height: {totalHeight}px; position: relative;"
+				>
 					{#each virtualItems as item (item.key)}
-					{@const lc = commitList[item.index]}
-					{@const branchLabels = branchByHash.get(lc.commit.hash) ?? []}
-					<!-- svelte-ignore a11y_no_noninteractive_element_interactions a11y_click_events_have_key_events -->
-					<div
-						class="row"
-						class:selected={selected?.commit.hash === lc.commit.hash}
-						style="position: absolute; top: {item.start}px; width: 100%; left: 0; right: 0;"
-						role="button"
-						tabindex="0"
-						onclick={() => selectCommit(lc)}
-						onkeydown={(e) =>
-							(e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), selectCommit(lc))}
-						onmouseenter={(e) => {
-							tooltipCommit = lc;
-							tooltipPos = { x: e.clientX, y: e.clientY };
-						}}
-						onmousemove={(e) => {
-							if (tooltipCommit?.commit.hash === lc.commit.hash) {
+						{@const lc = commitList[item.index]}
+						{@const branchLabels =
+							branchByHash.get(lc.commit.hash) ?? []}
+						<!-- svelte-ignore a11y_no_noninteractive_element_interactions a11y_click_events_have_key_events -->
+						<div
+							class="row"
+							class:selected={selected?.commit.hash ===
+								lc.commit.hash}
+							style="position: absolute; top: {item.start}px; width: 100%; left: 0; right: 0;"
+							role="button"
+							tabindex="0"
+							onclick={() => selectCommit(lc)}
+							onkeydown={(e) =>
+								(e.key === "Enter" || e.key === " ") &&
+								(e.preventDefault(), selectCommit(lc))}
+							onmouseenter={(e) => {
+								tooltipCommit = lc;
 								tooltipPos = { x: e.clientX, y: e.clientY };
-							}
-						}}
-						onmouseleave={() => {
-							tooltipCommit = null;
-						}}
-					>
-						<span
-							class="hash"
-							style="color: {LANE_COLORS_CSS[lc.color_index % 8]}"
+							}}
+							onmousemove={(e) => {
+								if (
+									tooltipCommit?.commit.hash ===
+									lc.commit.hash
+								) {
+									tooltipPos = { x: e.clientX, y: e.clientY };
+								}
+							}}
+							onmouseleave={() => {
+								tooltipCommit = null;
+							}}
 						>
-							{lc.commit.short_hash}
-						</span>
-						<div class="labels-and-message">
-							{#each branchLabels as b}
-								<span
-									class="branch-pill"
-									class:remote={b.isRemote}
-									class:head={b.isHead}
-								>
-									{b.name}
+							<span
+								class="hash"
+								style="color: {LANE_COLORS_CSS[
+									lc.color_index % 8
+								]}"
+							>
+								{lc.commit.short_hash}
+							</span>
+							<div class="labels-and-message">
+								{#each branchLabels as b}
+									<span
+										class="branch-pill"
+										class:remote={b.isRemote}
+										class:head={b.isHead}
+									>
+										{b.name}
+									</span>
+								{/each}
+								<span class="message" title={lc.commit.message}>
+									{lc.commit.message
+										.split("\n")[0]
+										.slice(0, 60)}
+									{lc.commit.message.split("\n")[0].length >
+									60
+										? "…"
+										: ""}
 								</span>
-							{/each}
-							<span class="message" title={lc.commit.message}>
-								{lc.commit.message.split('\n')[0].slice(0, 60)}
-								{lc.commit.message.split('\n')[0].length > 60 ? '…' : ''}
+							</div>
+							<span class="meta">
+								{lc.commit.author_name} · {formatRelativeTime(
+									lc.commit.timestamp,
+								)}
 							</span>
 						</div>
-						<span class="meta">
-							{lc.commit.author_name} · {formatRelativeTime(lc.commit.timestamp)}
-						</span>
-					</div>
 					{/each}
 				</div>
 			</div>
@@ -554,9 +589,12 @@
 			<div class="tooltip-hash">{tooltipCommit.commit.hash}</div>
 			<div class="tooltip-message">{tooltipCommit.commit.message}</div>
 			<div class="tooltip-author">
-				{tooltipCommit.commit.author_name} &lt;{tooltipCommit.commit.author_email}&gt;
+				{tooltipCommit.commit.author_name} &lt;{tooltipCommit.commit
+					.author_email}&gt;
 			</div>
-			<div class="tooltip-date">{formatTooltipDate(tooltipCommit.commit.timestamp)}</div>
+			<div class="tooltip-date">
+				{formatTooltipDate(tooltipCommit.commit.timestamp)}
+			</div>
 		</div>
 	{/if}
 </div>
@@ -640,7 +678,7 @@
 		align-items: center;
 		justify-content: center;
 		min-height: 120px;
-		background: var(--bg-primary);
+		background: var(--bg-secondary);
 	}
 
 	.graph-loading {
@@ -726,7 +764,7 @@
 	.list-col {
 		flex: 1;
 		min-width: 0;
-		background: var(--bg-primary);
+		background: var(--bg-secondary);
 		color: var(--text-primary);
 	}
 
