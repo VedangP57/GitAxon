@@ -613,10 +613,10 @@
 		display: flex;
 		align-items: center;
 		gap: 12px;
-		color: white;
+		color: var(--text-primary);
 		padding: 8px 12px;
 		font-size: 12px;
-		background: #161b22;
+		background: var(--bg-secondary);
 		flex-shrink: 0;
 	}
 
@@ -782,11 +782,11 @@
 
 	.row:hover {
 		will-change: background-color;
-		background: #161b22;
+		background: var(--bg-tertiary);
 	}
 
 	.row.selected {
-		background: #21262d;
+		background: var(--border);
 	}
 
 	.hash {
@@ -809,19 +809,19 @@
 		font-size: 10px;
 		padding: 2px 6px;
 		border-radius: 4px;
-		background: #58a6ff;
-		color: #0d1117;
+		background: var(--accent-blue);
+		color: var(--bg-primary);
 		flex-shrink: 0;
 	}
 
 	.branch-pill.remote {
-		background: #8b949e;
-		color: #0d1117;
+		background: var(--text-secondary);
+		color: var(--bg-primary);
 	}
 
 	.branch-pill.head {
-		background: #3fb950;
-		color: #0d1117;
+		background: var(--text-primary);
+		color: var(--bg-primary);
 	}
 
 	.message {
