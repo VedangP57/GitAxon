@@ -275,8 +275,6 @@
 		if (!app) return;
 		const list = commitList;
 
-		console.log("Pixi: drawing", list.length, "commits");
-
 		// Clear stage
 		app.stage.removeChildren();
 
@@ -377,7 +375,6 @@
 		}
 
 		app.renderer.render(app.stage);
-		console.log("Pixi: draw complete");
 	}
 
 	// Reactive redraw when commits change (after init)
