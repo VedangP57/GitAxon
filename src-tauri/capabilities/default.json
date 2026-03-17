@@ -8,6 +8,9 @@
   "permissions": [
     "core:default",
     "core:window:allow-set-title",
-    "dialog:allow-open"
+    "dialog:allow-open",
+    "core:event:default",
+    "core:event:allow-listen",
+    "core:event:allow-emit"
   ]
 }

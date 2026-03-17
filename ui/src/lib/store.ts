@@ -1,4 +1,5 @@
 import { writable, get } from 'svelte/store';
+import { listen } from '@tauri-apps/api/event';
 import {
 	getCommits,
 	getBranches,
@@ -7,9 +8,11 @@ import {
 	getDiffWorkingTree,
 	getDiffStaged,
 	openRepository,
-	fetchRemote
+	fetchRemote,
+	startFileWatch,
+	stopFileWatch
 } from './tauri';
-import type { LanedCommit, BranchInfo, IndexEntry, DiffFile } from './types';
+import type { LanedCommit, BranchInfo, IndexEntry, DiffFile, StatusEntry } from './types';
 
 const REPO_KEY = 'gitfast-current-repo';
 
@@ -35,11 +38,15 @@ function setStoredRepo(path: string | null): void {
 const currentRepoStore = writable<string | null>(getStoredRepo());
 const commitsStore = writable<LanedCommit[]>([]);
 const branchesStore = writable<BranchInfo[]>([]);
-const statusStore = writable<IndexEntry[]>([]);
+// Legacy status store (IndexEntry) used by parts of the UI not yet migrated.
+const legacyStatusStore = writable<IndexEntry[]>([]);
+// Fast status store powered by Rust-owned state and patches.
+const statusStore = writable<StatusEntry[]>([]);
 const selectedCommitStore = writable<LanedCommit | null>(null);
 const selectedFileStore = writable<DiffFile | null>(null);
 const commitDiffFilesStore = writable<DiffFile[]>([]);
 const isLoadingStore = writable<boolean>(false);
+const isRefreshingStore = writable<boolean>(false);
 const isDiffLoadingStore = writable<boolean>(false);
 const errorStore = writable<string | null>(null);
 const hasMoreStore = writable<boolean>(true);
@@ -55,11 +62,22 @@ const diffModeStore = writable<DiffMode>('commit');
 const rightPanelModeStore = writable<RightPanelMode>('wip');
 const openCreateBranchFormStore = writable<boolean>(false);
 
+// Guards to prevent duplicate repo loads / watchers
+let loadRepoLock = false;
+let currentLoadingRepo = '';
+let watchedRepo = '';
+let unlistenWorktree: (() => void) | null = null;
+let unlistenGitState: (() => void) | null = null;
+
 // Export as readable stores for components
 export const currentRepo = { subscribe: currentRepoStore.subscribe };
 export const commits = { subscribe: commitsStore.subscribe };
 export const branches = { subscribe: branchesStore.subscribe };
-export const status = { subscribe: statusStore.subscribe };
+export const status = {
+	subscribe: statusStore.subscribe,
+	set: statusStore.set,
+	update: statusStore.update
+};
 export const selectedCommit = { subscribe: selectedCommitStore.subscribe };
 export const selectedFile = { subscribe: selectedFileStore.subscribe };
 export const commitDiffFiles = { subscribe: commitDiffFilesStore.subscribe };
@@ -72,8 +90,33 @@ export const diffFile = { subscribe: diffFileStore.subscribe };
 export const diffMode = { subscribe: diffModeStore.subscribe };
 export const rightPanelMode = { subscribe: rightPanelModeStore.subscribe };
 export const openCreateBranchForm = { subscribe: openCreateBranchFormStore.subscribe, set: openCreateBranchFormStore.set };
+export const isRefreshing = { subscribe: isRefreshingStore.subscribe };
+
+export function showWip(): void {
+	selectedCommitStore.set(null);
+	selectedFileStore.set(null);
+	commitDiffFilesStore.set([]);
+	diffFileStore.set(null);
+	centerViewStore.set('graph');
+	rightPanelModeStore.set('wip');
+}
 
 export async function loadRepo(repoPath: string): Promise<void> {
+	// Skip if same repo already loaded or loading
+	if (currentLoadingRepo === repoPath) {
+		console.log('[Store] Skipping duplicate loadRepo for', repoPath);
+		return;
+	}
+
+	if (loadRepoLock) {
+		console.log('[Store] loadRepo already in progress, skipping');
+		return;
+	}
+
+	loadRepoLock = true;
+	currentLoadingRepo = repoPath;
+	console.log('[Store] loadRepo START:', repoPath);
+
 	const loadStart = Date.now();
 	const MIN_LOAD_MS = 300;
 
@@ -97,7 +140,10 @@ export async function loadRepo(repoPath: string): Promise<void> {
 		selectedCommitStore.set(null);
 		selectedFileStore.set(null);
 		commitDiffFilesStore.set([]);
+
+		await setupFileWatcher(repoPath);
 	} catch (err) {
+		console.error('[Store] loadRepo error:', err);
 		errorStore.set(err instanceof Error ? err.message : String(err));
 		throw err;
 	} finally {
@@ -106,6 +152,8 @@ export async function loadRepo(repoPath: string): Promise<void> {
 		setTimeout(() => {
 			isLoadingStore.set(false);
 		}, remaining);
+		loadRepoLock = false;
+		currentLoadingRepo = '';
 	}
 }
 
@@ -223,6 +271,21 @@ export async function selectFileFromStaging(
 }
 
 export function goHome(): void {
+	watchedRepo = '';
+	if (unlistenWorktree) {
+		unlistenWorktree();
+		unlistenWorktree = null;
+	}
+	if (unlistenGitState) {
+		unlistenGitState();
+		unlistenGitState = null;
+	}
+	try {
+		void stopFileWatch();
+	} catch {
+		// ignore
+	}
+
 	currentRepoStore.set(null);
 	setStoredRepo(null);
 	commitsStore.set([]);
@@ -263,4 +326,130 @@ export async function fetchFromRemote(remoteName: string = 'origin'): Promise<vo
 	} finally {
 		isLoadingStore.set(false);
 	}
+}
+
+async function setupFileWatcher(repoPath: string) {
+	// HARD GUARD — skip if already watching this repo
+	if (watchedRepo === repoPath) {
+		console.log('[Watcher] Already watching', repoPath);
+		return;
+	}
+	watchedRepo = repoPath;
+
+	// Clean up previous listeners
+	if (unlistenWorktree) {
+		unlistenWorktree();
+		unlistenWorktree = null;
+	}
+	if (unlistenGitState) {
+		unlistenGitState();
+		unlistenGitState = null;
+	}
+
+	// Stop previous Rust watcher
+	await stopFileWatch();
+
+	// Start new Rust watcher
+	await startFileWatch(repoPath);
+	console.log('[Watcher] Started for', repoPath);
+
+	// Listen for working tree changes (file saves) via status patches
+	unlistenWorktree = await listen('worktree-changed', async (event) => {
+		const current = get(currentRepoStore);
+		if (!current) return;
+
+		const raw = event.payload as string;
+		console.log('[Frontend] worktree-changed RECEIVED:', raw);
+
+		// Ignore initial test event
+		if (raw === 'TEST_EVENT') {
+			return;
+		}
+
+		try {
+			const patch = JSON.parse(raw) as {
+				added?: StatusEntry[];
+				removed?: string[];
+				changed?: StatusEntry[];
+			};
+
+			if (!patch || typeof patch !== 'object') return;
+
+			const added = patch.added ?? [];
+			const removed = patch.removed ?? [];
+			const changed = patch.changed ?? [];
+
+			// Skip empty patches (no real changes)
+			if (added.length === 0 && removed.length === 0 && changed.length === 0) {
+				return;
+			}
+
+			console.log(
+				'[Watcher] Applying patch:',
+				`+${added.length} -${removed.length} ~${changed.length}`
+			);
+
+			statusStore.update((currentStatus) => {
+				let updated = [...currentStatus];
+
+				// Remove files no longer modified
+				if (removed.length > 0) {
+					updated = updated.filter((e) => !removed.includes(e.path));
+				}
+
+				// Add new modified files
+				for (const entry of added) {
+					if (!updated.some((e) => e.path === entry.path)) {
+						updated.push(entry);
+					}
+				}
+
+				// Update changed files
+				for (const entry of changed) {
+					const idx = updated.findIndex((e) => e.path === entry.path);
+					if (idx >= 0) {
+						updated[idx] = entry;
+					} else {
+						updated.push(entry);
+					}
+				}
+
+				return updated;
+			});
+		} catch (e) {
+			console.error('[Watcher] Failed to parse patch:', e);
+			// Fallback: full refresh
+			getStatus(current).then((real) => statusStore.set(real));
+		}
+	});
+	console.log('[Watcher] worktree-changed listener registered');
+
+	// Listen for git state changes (commits, checkouts)
+	unlistenGitState = await listen('git-state-changed', async () => {
+		const current = get(currentRepoStore);
+		if (!current) return;
+
+		console.log('[Watcher] Git state changed');
+		await refreshStatus();
+		scheduleGraphReload(current);
+	});
+	console.log('[Watcher] git-state-changed listener registered');
+}
+
+let graphReloadTimer: ReturnType<typeof setTimeout> | null = null;
+
+function scheduleGraphReload(repoPath: string) {
+	if (graphReloadTimer) clearTimeout(graphReloadTimer);
+	graphReloadTimer = setTimeout(async () => {
+		try {
+			const commitsData = await getCommits(repoPath, 200, 0);
+			commitsStore.set(commitsData);
+			const branchesData = await getBranches(repoPath);
+			branchesStore.set(branchesData);
+		} catch (err) {
+			errorStore.set(err instanceof Error ? err.message : String(err));
+		} finally {
+			graphReloadTimer = null;
+		}
+	}, 500);
 }

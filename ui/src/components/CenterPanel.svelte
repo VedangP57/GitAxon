@@ -5,11 +5,12 @@
 </script>
 
 <div class="center-panel">
-	{#if $centerView === 'diff'}
-		<DiffViewer />
-	{:else}
+	<div class="view-layer" class:active={$centerView === 'graph'}>
 		<CommitGraph />
-	{/if}
+	</div>
+	<div class="view-layer" class:active={$centerView === 'diff'}>
+		<DiffViewer />
+	</div>
 </div>
 
 <style>
@@ -20,5 +21,21 @@
 		overflow: hidden;
 		position: relative;
 		background: var(--bg-secondary);
+	}
+
+	.view-layer {
+		position: absolute;
+		inset: 0;
+		visibility: hidden;
+		pointer-events: none;
+		z-index: 0;
+	}
+
+	.view-layer.active {
+		visibility: visible;
+		pointer-events: auto;
+		z-index: 10;
+		display: flex;
+		flex-direction: column;
 	}
 </style>

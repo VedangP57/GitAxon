@@ -7,7 +7,7 @@
 		selectedCommit,
 		commitDiffFiles,
 		isLoading,
-		refreshStatus,
+		isRefreshing,
 		loadRepo,
 		selectFile,
 		selectFileFromStaging,
@@ -19,20 +19,21 @@
 		unstageAll,
 		createCommit,
 		getGitConfig,
+		discardFile,
+		discardAllChanges,
 	} from "$lib/tauri";
 	import { showToast } from "$lib/toast";
-	import type { IndexEntry, DiffFile } from "$lib/types";
-
-	const unstagedStatuses = ["Unstaged", "Untracked", "Conflicted"] as const;
+	import type { IndexEntry, DiffFile, StatusEntry } from "$lib/types";
+	import { get } from "svelte/store";
 
 	const unstagedFiles = $derived(
-		$status.filter((e) =>
-			unstagedStatuses.includes(
-				e.status as (typeof unstagedStatuses)[number],
-			),
-		),
+		$status
+			.filter((f: StatusEntry) => !f.staged)
+			.sort((a, b) => a.path.localeCompare(b.path)),
 	);
-	const stagedFiles = $derived($status.filter((e) => e.status === "Staged"));
+	const stagedFiles = $derived(
+		$status.filter((f: StatusEntry) => f.staged),
+	);
 
 	let unstagedOpen = $state(true);
 	let stagedOpen = $state(true);
@@ -43,6 +44,16 @@
 	let isStaging = $state<string | null>(null);
 	let authorName = $state("");
 	let authorEmail = $state("");
+
+	// Discard state
+	let discardingFile = $state<string | null>(null);
+	let showDiscardAllConfirm = $state(false);
+
+	// Context menu state
+	let fileMenuOpen = $state(false);
+	let fileMenuX = $state(0);
+	let fileMenuY = $state(0);
+	let fileMenuEntry = $state<StatusEntry | IndexEntry | null>(null);
 
 	const subjectLength = $derived(commitMessage.length);
 	const canCommit = $derived(
@@ -62,8 +73,18 @@
 		}
 	});
 
-	function getStatusIcon(entry: IndexEntry): { char: string; cls: string } {
-		switch (entry.status) {
+	function getStatusIcon(entry: StatusEntry | IndexEntry): { char: string; cls: string } {
+		// Map Rust status codes and legacy IndexEntry statuses to UI icons
+		const code = (entry as StatusEntry).status;
+		if (typeof code === "string") {
+			if (code === "A") return { char: "A", cls: "icon-add" };
+			if (code === "D") return { char: "D", cls: "icon-del" };
+			if (code === "WM" || code === "WD" || code === "M") {
+				return { char: "M", cls: "icon-mod" };
+			}
+		}
+		const legacyStatus = (entry as IndexEntry).status;
+		switch (legacyStatus) {
 			case "Untracked":
 				return { char: "A", cls: "icon-add" };
 			case "Conflicted":
@@ -99,27 +120,25 @@
 		return file.new_path ?? file.old_path ?? "";
 	}
 
-	async function handleStage(entry: IndexEntry, e: MouseEvent) {
+	async function handleStage(entry: StatusEntry | IndexEntry, e: MouseEvent) {
 		e.stopPropagation();
 		const repo = $currentRepo;
 		if (!repo) return;
 		isStaging = entry.path;
 		try {
 			await stageFile(repo, entry.path);
-			await refreshStatus();
 		} finally {
 			isStaging = null;
 		}
 	}
 
-	async function handleUnstage(entry: IndexEntry, e: MouseEvent) {
+	async function handleUnstage(entry: StatusEntry | IndexEntry, e: MouseEvent) {
 		e.stopPropagation();
 		const repo = $currentRepo;
 		if (!repo) return;
 		isStaging = entry.path;
 		try {
 			await unstageFile(repo, entry.path);
-			await refreshStatus();
 		} finally {
 			isStaging = null;
 		}
@@ -131,7 +150,6 @@
 		isStaging = "__all__";
 		try {
 			await stageAll(repo);
-			await refreshStatus();
 		} finally {
 			isStaging = null;
 		}
@@ -143,19 +161,18 @@
 		isStaging = "__all__";
 		try {
 			await unstageAll(repo);
-			await refreshStatus();
 		} finally {
 			isStaging = null;
 		}
 	}
 
-	async function handleUnstagedClick(entry: IndexEntry) {
+	async function handleUnstagedClick(entry: StatusEntry | IndexEntry) {
 		const repo = $currentRepo;
 		if (!repo) return;
 		await selectFileFromStaging(repo, entry.path, false);
 	}
 
-	async function handleStagedClick(entry: IndexEntry) {
+	async function handleStagedClick(entry: StatusEntry | IndexEntry) {
 		const repo = $currentRepo;
 		if (!repo) return;
 		await selectFileFromStaging(repo, entry.path, true);
@@ -163,6 +180,75 @@
 
 	function handleCommitFileClick(file: DiffFile) {
 		selectFile(file, "commit");
+	}
+
+	// ── Discard handlers ──
+	function handleDiscard(entry: StatusEntry | IndexEntry, e: MouseEvent) {
+		e.stopPropagation();
+		discardingFile = entry.path;
+	}
+
+	async function confirmDiscard(entry: StatusEntry | IndexEntry) {
+		const repo = $currentRepo;
+		if (!repo) return;
+		try {
+			await discardFile(repo, entry.path);
+			showToast(`Discarded changes to ${fileName(entry.path)}`, 'success');
+		} catch (e) {
+			showToast(String(e), 'error');
+		} finally {
+			discardingFile = null;
+		}
+	}
+
+	async function confirmDiscardAll() {
+		const repo = $currentRepo;
+		if (!repo) return;
+		try {
+			await discardAllChanges(repo);
+			showToast('Discarded all unstaged changes', 'success');
+		} catch (e) {
+			showToast(String(e), 'error');
+		} finally {
+			showDiscardAllConfirm = false;
+		}
+	}
+
+	// ── Context menu handlers ──
+	function showFileMenu(e: MouseEvent, entry: StatusEntry | IndexEntry) {
+		e.preventDefault();
+		e.stopPropagation();
+		fileMenuX = e.clientX;
+		fileMenuY = e.clientY;
+		fileMenuEntry = entry;
+		fileMenuOpen = true;
+	}
+
+	function closeFileMenu() {
+		fileMenuOpen = false;
+		fileMenuEntry = null;
+	}
+
+	function handleMenuStage(entry: (StatusEntry | IndexEntry) | null) {
+		closeFileMenu();
+		if (!entry) return;
+		const repo = $currentRepo;
+		if (!repo) return;
+		isStaging = entry.path;
+		stageFile(repo, entry.path).finally(() => { isStaging = null; });
+	}
+
+	function handleMenuDiscard(entry: (StatusEntry | IndexEntry) | null) {
+		closeFileMenu();
+		if (!entry) return;
+		discardingFile = entry.path;
+	}
+
+	function handleMenuCopy(entry: (StatusEntry | IndexEntry) | null) {
+		closeFileMenu();
+		if (!entry) return;
+		navigator.clipboard.writeText(entry.path).catch(() => {});
+		showToast('Path copied to clipboard', 'success');
 	}
 
 	async function handleCommit() {
@@ -232,6 +318,9 @@
 		<!-- ══════════════ WIP MODE ══════════════ -->
 		<div class="rp-header">
 			<span class="wip-label">// WIP</span>
+			{#if $isRefreshing}
+				<span class="refresh-indicator" title="Refreshing status">↻</span>
+			{/if}
 			<span class="file-count-badge">{$status.length}</span>
 			<button
 				class="hdr-action-btn green"
@@ -256,44 +345,87 @@
 						<span class="count-badge">{unstagedFiles.length}</span>
 					</button>
 					{#if unstagedFiles.length > 0}
-						<button
-							class="inline-action"
-							onclick={handleStageAll}
-							disabled={isStaging !== null}>Stage All</button
-						>
+						<div class="header-actions">
+							<button
+								class="inline-action"
+								onclick={handleStageAll}
+								disabled={isStaging !== null}>Stage All</button
+							>
+							<button
+								class="inline-action discard-all-btn"
+								title="Discard all unstaged changes"
+								onclick={() => (showDiscardAllConfirm = true)}
+								disabled={isStaging !== null}
+								style="padding: 2px 6px; display: inline-flex; align-items: center; justify-content: center;"
+							>
+								<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+									<polyline points="3 6 5 6 21 6"></polyline>
+									<path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+									<line x1="10" y1="11" x2="10" y2="17"></line>
+									<line x1="14" y1="11" x2="14" y2="17"></line>
+								</svg>
+							</button>
+						</div>
 					{/if}
 				</div>
+				{#if showDiscardAllConfirm}
+					<div class="discard-all-confirm">
+						<span class="warn-text">⚠ Discard ALL unstaged changes? This cannot be undone.</span>
+						<div class="confirm-actions">
+							<button class="btn-danger" onclick={confirmDiscardAll}>Discard All</button>
+							<button class="btn-cancel" onclick={() => (showDiscardAllConfirm = false)}>Cancel</button>
+						</div>
+					</div>
+				{/if}
 				{#if unstagedOpen}
 					<div class="file-list">
 						{#if unstagedFiles.length === 0}
 							<div class="empty-files">Working tree clean</div>
 						{:else}
 							{#each unstagedFiles as entry (entry.path)}
-								<!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
-								<div
-									class="file-row"
-									onclick={() => handleUnstagedClick(entry)}
-								>
-									<span
-										class="status-icon {getStatusIcon(entry)
-											.cls}"
-										>{getStatusIcon(entry).char}</span
+								{#if discardingFile === entry.path}
+									<div class="discard-confirm">
+										<span class="warn-icon">⚠</span>
+										<span class="warn-msg">Discard changes to <strong>{fileName(entry.path)}</strong>?</span>
+										<button class="btn-danger" onclick={() => confirmDiscard(entry)}>Discard</button>
+										<button class="btn-cancel" onclick={() => (discardingFile = null)}>Cancel</button>
+									</div>
+								{:else}
+									<div
+										class="file-row"
+										role="button"
+										tabindex="0"
+										onclick={() => handleUnstagedClick(entry)}
+										onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), handleUnstagedClick(entry))}
+										oncontextmenu={(e) => showFileMenu(e, entry)}
 									>
-									<span class="file-name"
-										>{fileName(entry.path)}</span
-									>
-									{#if dirName(entry.path)}
-										<span class="file-dir"
-											>{dirName(entry.path)}</span
+										<span
+											class="status-icon {getStatusIcon(entry)
+												.cls}"
+											>{getStatusIcon(entry).char}</span
 										>
-									{/if}
-									<button
-										class="stage-btn plus"
-										onclick={(e) => handleStage(entry, e)}
-										disabled={isStaging !== null}
-										title="Stage {entry.path}">+</button
-									>
-								</div>
+										<span class="file-name"
+											>{fileName(entry.path)}</span
+										>
+										{#if dirName(entry.path)}
+											<span class="file-dir"
+												>{dirName(entry.path)}</span
+											>
+										{/if}
+										<button
+											class="stage-btn discard-btn"
+											onclick={(e) => handleDiscard(entry, e)}
+											disabled={isStaging !== null}
+											title="Discard changes to {entry.path}">↺</button
+										>
+										<button
+											class="stage-btn plus"
+											onclick={(e) => handleStage(entry, e)}
+											disabled={isStaging !== null}
+											title="Stage {entry.path}">+</button
+										>
+									</div>
+								{/if}
 							{/each}
 						{/if}
 					</div>
@@ -325,10 +457,12 @@
 							<div class="empty-files">Nothing staged</div>
 						{:else}
 							{#each stagedFiles as entry (entry.path)}
-								<!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
 								<div
 									class="file-row"
+									role="button"
+									tabindex="0"
 									onclick={() => handleStagedClick(entry)}
+									onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), handleStagedClick(entry))}
 								>
 									<span
 										class="status-icon {getStatusIcon(entry)
@@ -453,10 +587,12 @@
 				{:else}
 					<div class="commit-file-list">
 						{#each $commitDiffFiles as file (getFilePath(file))}
-							<!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
 							<div
 								class="file-row commit-file-row"
+								role="button"
+								tabindex="0"
 								onclick={() => handleCommitFileClick(file)}
+								onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), handleCommitFileClick(file))}
 							>
 								<span
 									class="status-icon {getCommitFileIcon(file)
@@ -621,6 +757,7 @@
 	}
 
 	.file-row {
+		contain: strict;
 		display: flex;
 		align-items: center;
 		gap: 6px;
@@ -963,5 +1100,167 @@
 		100% {
 			background-position: -200% 0;
 		}
+	}
+	.discard-btn {
+		color: #f85149 !important;
+		font-size: 16px !important;
+		margin-left: 4px;
+	}
+	.discard-btn:hover {
+		background: rgba(248, 81, 73, 0.15) !important;
+		border-color: #f85149 !important;
+	}
+
+	.discard-confirm {
+		background: rgba(248, 81, 73, 0.08);
+		border: 1px solid rgba(248, 81, 73, 0.3);
+		border-radius: 4px;
+		margin: 2px 8px;
+		padding: 5px 10px;
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		font-size: 12px;
+		color: var(--text-secondary);
+	}
+	.warn-icon {
+		color: #f85149;
+		flex-shrink: 0;
+	}
+	.warn-msg {
+		flex: 1;
+		min-width: 0;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
+	.btn-danger {
+		background: #f85149;
+		color: white;
+		border: none;
+		border-radius: 3px;
+		padding: 2px 10px;
+		cursor: pointer;
+		font-size: 11px;
+		flex-shrink: 0;
+		transition: opacity 0.1s;
+	}
+	.btn-danger:hover {
+		opacity: 0.85;
+	}
+
+	.btn-cancel {
+		background: transparent;
+		color: #8b949e;
+		border: 1px solid var(--border);
+		border-radius: 3px;
+		padding: 2px 10px;
+		cursor: pointer;
+		font-size: 11px;
+		flex-shrink: 0;
+		transition: color 0.1s;
+	}
+	.btn-cancel:hover {
+		color: var(--text-primary);
+	}
+
+	.header-actions {
+		display: flex;
+		align-items: center;
+		gap: 4px;
+	}
+
+	.discard-all-btn {
+		padding: 2px 6px !important;
+		color: #f85149 !important;
+		border-color: rgba(248, 81, 73, 0.4) !important;
+	}
+	.discard-all-btn:hover:not(:disabled) {
+		background: rgba(248, 81, 73, 0.1) !important;
+		border-color: #f85149 !important;
+	}
+
+	.discard-all-confirm {
+		background: rgba(248, 81, 73, 0.07);
+		border-bottom: 1px solid rgba(248, 81, 73, 0.25);
+		padding: 6px 12px;
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		flex-wrap: wrap;
+	}
+	.warn-text {
+		font-size: 11px;
+		color: var(--text-secondary);
+		flex: 1;
+	}
+	.confirm-actions {
+		display: flex;
+		gap: 6px;
+	}
+
+	/* Context menu */
+	.file-menu-backdrop {
+		position: fixed;
+		inset: 0;
+		z-index: 99;
+	}
+	.file-menu {
+		position: fixed;
+		z-index: 100;
+		background: var(--bg-secondary);
+		border: 1px solid var(--border);
+		border-radius: 6px;
+		padding: 4px 0;
+		min-width: 170px;
+		box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+	}
+	.menu-item {
+		display: block;
+		width: 100%;
+		text-align: left;
+		padding: 6px 14px;
+		background: none;
+		border: none;
+		color: var(--text-secondary);
+		font-size: 12px;
+		cursor: pointer;
+		transition: background 0.08s, color 0.08s;
+	}
+	.menu-item:hover {
+		background: var(--bg-tertiary);
+		color: var(--text-primary);
+	}
+	.discard-menu-item { color: #f85149; }
+	.discard-menu-item:hover { color: #ff6b63; background: rgba(248,81,73,0.1); }
+	.menu-separator {
+		height: 1px;
+		background: var(--border);
+		margin: 4px 0;
+	}
+
+	.watching-indicator {
+		color: #3fb950;
+		font-size: 8px;
+		animation: pulse 2s ease-in-out infinite;
+	}
+	.watching-indicator.spin {
+		animation: spin 0.5s linear infinite;
+	}
+	@keyframes pulse {
+		0%, 100% { opacity: 1; }
+		50% { opacity: 0.3; }
+	}
+	@keyframes spin {
+		from { transform: rotate(0deg); }
+		to { transform: rotate(360deg); }
+	}
+
+	.refresh-indicator {
+		font-size: 11px;
+		color: var(--text-muted);
+		margin-left: 2px;
+		animation: spin 0.5s linear infinite;
 	}
 </style>

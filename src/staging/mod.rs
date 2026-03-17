@@ -3,6 +3,7 @@
 use std::collections::HashMap;
 use std::path::Path;
 
+use anyhow::Result;
 use git2::{IndexAddOption, ObjectType, Repository, Status};
 use serde::{Deserialize, Serialize};
 
@@ -285,4 +286,36 @@ pub async fn get_status_json(repo_path: &str) -> GitfastResult<String> {
     let entries = get_status(repo_path).await?;
     serde_json::to_string_pretty(&entries)
         .map_err(|e| GitfastError::SerializationError(e.to_string()))
+}
+
+/// Discard changes to a single tracked file (restore from HEAD).
+pub fn discard_file(repo: &Repository, file_path: &str) -> Result<()> {
+    let mut checkout = git2::build::CheckoutBuilder::new();
+    checkout.path(file_path);
+    checkout.force();
+    repo.checkout_head(Some(&mut checkout))
+        .map_err(|e| anyhow::anyhow!(e))?;
+    Ok(())
+}
+
+/// Discard ALL unstaged changes (restore entire working tree from HEAD).
+pub fn discard_all(repo: &Repository) -> Result<()> {
+    let mut checkout = git2::build::CheckoutBuilder::new();
+    checkout.force();
+    repo.checkout_head(Some(&mut checkout))
+        .map_err(|e| anyhow::anyhow!(e))?;
+    Ok(())
+}
+
+/// Delete an untracked file (new files not yet in HEAD).
+pub fn delete_untracked(repo: &Repository, file_path: &str) -> Result<()> {
+    let repo_path = repo
+        .workdir()
+        .ok_or_else(|| anyhow::anyhow!("No working directory"))?;
+    let full_path = repo_path.join(file_path);
+    if full_path.exists() {
+        std::fs::remove_file(&full_path)
+            .map_err(|e| anyhow::anyhow!(e))?;
+    }
+    Ok(())
 }

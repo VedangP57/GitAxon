@@ -27,3 +27,6 @@ log = "0.4"
 tauri = { version = "2.10.3", features = [] }
 tauri-plugin-log = "2"
 tauri-plugin-dialog = "2.6.0"
+notify = { version = "6.1", features = ["macos_kqueue"] }
+notify-debouncer-mini = "0.4"
+libc = "0.2"

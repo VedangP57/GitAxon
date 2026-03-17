@@ -3,11 +3,16 @@
 		diffFile,
 		diffMode,
 		isDiffLoading,
-		closeDiff
+		closeDiff,
+		currentRepo
 	} from '$lib/store';
+	import { discardFile } from '$lib/tauri';
+	import { showToast } from '$lib/toast';
 	import type { DiffFile, DiffHunk } from '$lib/types';
+	import { get } from 'svelte/store';
 
 	let activeTab = $state<'diff' | 'file'>('diff');
+	let showDiscardConfirm = $state(false);
 
 	function getFilePath(file: DiffFile): string {
 		return file.new_path ?? file.old_path ?? '';
@@ -15,6 +20,22 @@
 
 	function hunkHeader(hunk: DiffHunk): string {
 		return `@@ -${hunk.old_start},${hunk.old_lines} +${hunk.new_start},${hunk.new_lines} @@`;
+	}
+
+	async function handleDiscardCurrentFile() {
+		const repo = get(currentRepo);
+		const file = get(diffFile);
+		if (!repo || !file) return;
+		const path = getFilePath(file);
+		try {
+			await discardFile(repo, path);
+			showToast(`Discarded changes to ${path.split('/').pop()}`, 'success');
+			closeDiff();
+		} catch (e) {
+			showToast(String(e), 'error');
+		} finally {
+			showDiscardConfirm = false;
+		}
 	}
 </script>
 
@@ -46,9 +67,24 @@
 				<button class="toggle-btn">Blame</button>
 				<button class="toggle-btn">History</button>
 			</div>
+			{#if $diffMode === 'working-tree' && $diffFile}
+				<button
+					class="discard-file-btn"
+					title="Discard all changes to this file"
+					onclick={() => (showDiscardConfirm = !showDiscardConfirm)}
+				>↺ Discard</button>
+			{/if}
 			<button class="close-btn" onclick={closeDiff} title="Close diff">✕</button>
 		</div>
 	</div>
+
+	{#if showDiscardConfirm && $diffMode === 'working-tree'}
+		<div class="discard-confirm-bar">
+			<span class="dc-warn">⚠ Discard all changes to this file? This cannot be undone.</span>
+			<button class="dc-btn-danger" onclick={handleDiscardCurrentFile}>Discard</button>
+			<button class="dc-btn-cancel" onclick={() => (showDiscardConfirm = false)}>Cancel</button>
+		</div>
+	{/if}
 
 	<!-- Diff content -->
 	<div class="dv-content">
@@ -344,4 +380,59 @@
 	}
 	.hunk-header-row:hover .revert-hunk-btn { opacity: 1; }
 	.revert-hunk-btn:hover { color: var(--accent-orange); border-color: var(--accent-orange); }
+
+	/* Discard button */
+	.discard-file-btn {
+		padding: 3px 10px;
+		background: transparent;
+		border: 1px solid #f85149;
+		border-radius: 4px;
+		color: #f85149;
+		font-size: 11px;
+		cursor: pointer;
+		transition: background 0.12s, color 0.12s;
+		white-space: nowrap;
+	}
+	.discard-file-btn:hover {
+		background: rgba(248, 81, 73, 0.15);
+		color: #ff6b63;
+	}
+
+	/* Discard confirm bar */
+	.discard-confirm-bar {
+		display: flex;
+		align-items: center;
+		gap: 10px;
+		padding: 6px 14px;
+		background: rgba(248, 81, 73, 0.07);
+		border-bottom: 1px solid rgba(248, 81, 73, 0.28);
+		flex-shrink: 0;
+	}
+	.dc-warn {
+		flex: 1;
+		font-size: 11px;
+		color: var(--text-secondary);
+	}
+	.dc-btn-danger {
+		background: #f85149;
+		color: white;
+		border: none;
+		border-radius: 3px;
+		padding: 2px 12px;
+		cursor: pointer;
+		font-size: 11px;
+		transition: opacity 0.1s;
+	}
+	.dc-btn-danger:hover { opacity: 0.85; }
+	.dc-btn-cancel {
+		background: transparent;
+		color: #8b949e;
+		border: 1px solid var(--border);
+		border-radius: 3px;
+		padding: 2px 12px;
+		cursor: pointer;
+		font-size: 11px;
+		transition: color 0.1s;
+	}
+	.dc-btn-cancel:hover { color: var(--text-primary); }
 </style>

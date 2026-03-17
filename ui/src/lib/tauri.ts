@@ -3,6 +3,7 @@ import type {
 	LanedCommit,
 	BranchInfo,
 	IndexEntry,
+	StatusEntry,
 	DiffFile,
 	FetchResult,
 	RepoRecord
@@ -32,9 +33,9 @@ export async function getBranches(repoPath: string): Promise<BranchInfo[]> {
 	return parseJson<BranchInfo[]>(raw);
 }
 
-export async function getStatus(repoPath: string): Promise<IndexEntry[]> {
+export async function getStatus(repoPath: string): Promise<StatusEntry[]> {
 	const raw = await invoke('get_status', { repoPath });
-	return parseJson<IndexEntry[]>(raw);
+	return parseJson<StatusEntry[]>(raw);
 }
 
 export async function stageFile(
@@ -193,4 +194,47 @@ export async function getRecentRepositories(
 ): Promise<RepoRecord[]> {
 	const raw = await invoke('get_recent_repositories', { limit });
 	return parseJson<RepoRecord[]>(raw);
+}
+
+export async function discardFile(
+	repoPath: string,
+	filePath: string
+): Promise<void> {
+	await invoke('discard_file', { repoPath, filePath });
+}
+
+export async function discardAllChanges(repoPath: string): Promise<void> {
+	await invoke('discard_all_changes', { repoPath });
+}
+
+export async function startFileWatch(repoPath: string): Promise<void> {
+    await invoke('start_file_watch', { repoPath })
+}
+
+export async function stopFileWatch(): Promise<void> {
+    await invoke('stop_file_watch')
+}
+
+export async function getRepoIdentity(repoPath: string) {
+	const raw = await invoke<string>('get_repo_identity', { repoPath });
+	return JSON.parse(raw);
+}
+
+export async function getSshProfiles() {
+	const raw = await invoke<string>('get_ssh_profiles');
+	return JSON.parse(raw);
+}
+
+export async function switchRepoIdentity(
+	repoPath: string,
+	sshHostAlias: string,
+	name: string,
+	email: string
+) {
+	await invoke('switch_repo_identity', {
+		repoPath,
+		sshHostAlias,
+		name,
+		email
+	});
 }

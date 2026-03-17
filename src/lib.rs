@@ -2,12 +2,15 @@
 
 pub mod branches;
 pub mod cache;
+pub mod identity;
 pub mod diff;
 pub mod errors;
 pub mod graph;
 pub mod remotes;
 pub mod staging;
 pub mod stash;
+pub mod watcher;
+
 
 // Types - cache
 pub use cache::{CommitNode, RepoRecord};

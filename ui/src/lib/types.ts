@@ -60,6 +60,19 @@ export interface IndexEntry {
 	unstaged_diff: DiffHunk[] | null;
 }
 
+// Fast status entry driven directly by Rust FileStatus patches
+export interface StatusEntry {
+	path: string;
+	status: string; // "M", "A", "D", "WM", "WD", "?"
+	staged: boolean;
+}
+
+export interface StatusPatch {
+	added: StatusEntry[];
+	removed: string[];
+	changed: StatusEntry[];
+}
+
 export interface FetchResult {
 	remote: string;
 	updatedRefs: string[];
