@@ -81,7 +81,10 @@ export const status = {
 export const selectedCommit = { subscribe: selectedCommitStore.subscribe };
 export const selectedFile = { subscribe: selectedFileStore.subscribe };
 export const commitDiffFiles = { subscribe: commitDiffFilesStore.subscribe };
-export const isLoading = { subscribe: isLoadingStore.subscribe };
+export const isLoading = {
+	subscribe: isLoadingStore.subscribe,
+	set: isLoadingStore.set
+};
 export const isDiffLoading = { subscribe: isDiffLoadingStore.subscribe };
 export const error = { subscribe: errorStore.subscribe };
 export const hasMore = { subscribe: hasMoreStore.subscribe };
@@ -128,7 +131,7 @@ export async function loadRepo(repoPath: string): Promise<void> {
 		setStoredRepo(repoPath);
 
 		const [commitsData, branchesData, statusData] = await Promise.all([
-			getCommits(repoPath, 200, 0),
+			getCommits(repoPath, 500, 0),
 			getBranches(repoPath),
 			getStatus(repoPath)
 		]);
@@ -187,7 +190,7 @@ export async function loadMoreCommits(): Promise<void> {
 	isLoadingMore = true;
 	errorStore.set(null);
 	try {
-		const more = await getCommits(repo, 200, currentCommits.length);
+		const more = await getCommits(repo, 500, currentCommits.length);
 		if (more.length === 0) {
 			hasMoreStore.set(false);
 			return;
@@ -314,7 +317,7 @@ export async function fetchFromRemote(remoteName: string = 'origin'): Promise<vo
 	try {
 		await fetchRemote(repo, remoteName);
 		const [commitsData, branchesData] = await Promise.all([
-			getCommits(repo, 200, 0),
+			getCommits(repo, 500, 0),
 			getBranches(repo)
 		]);
 		commitsStore.set(commitsData);
@@ -442,7 +445,7 @@ function scheduleGraphReload(repoPath: string) {
 	if (graphReloadTimer) clearTimeout(graphReloadTimer);
 	graphReloadTimer = setTimeout(async () => {
 		try {
-			const commitsData = await getCommits(repoPath, 200, 0);
+			const commitsData = await getCommits(repoPath, 500, 0);
 			commitsStore.set(commitsData);
 			const branchesData = await getBranches(repoPath);
 			branchesStore.set(branchesData);

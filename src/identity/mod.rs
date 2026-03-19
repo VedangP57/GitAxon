@@ -129,6 +129,38 @@ pub fn get_repo_identity(repo_path: &str) -> Result<GitIdentity, String> {
         .map(|p| p.label.clone())
         .unwrap_or_else(|| ssh_host.clone());
 
+    let is_office_key = ssh_key.contains("id_ed25519") 
+        && !ssh_key.contains("vedangp57");
+    let is_personal_key = ssh_key.contains("vedangp57");
+
+    // Known office org names — read from git remote URL
+    let known_office_orgs = vec![
+        "elvee-jewels",
+        "Sarvadhi-Solutions", 
+        "sarvadhi",
+    ];
+
+    let remote_org = remote_url
+        .split(':')
+        .nth(1)
+        .unwrap_or("")
+        .split('/')
+        .next()
+        .unwrap_or("");
+
+    let is_office_repo = known_office_orgs.iter()
+        .any(|org| remote_org.to_lowercase()
+            .contains(&org.to_lowercase()));
+
+    // is_correct = key type matches repo type
+    let is_correct = if is_office_repo {
+        is_office_key  // office repo should use office key
+    } else if is_personal_key {
+        true  // personal key on personal repo = correct
+    } else {
+        true  // unknown repo, assume correct
+    };
+
     Ok(GitIdentity {
         name,
         email,
@@ -136,7 +168,7 @@ pub fn get_repo_identity(repo_path: &str) -> Result<GitIdentity, String> {
         ssh_key,
         account_label,
         remote_url,
-        is_correct: true,
+        is_correct,
     })
 }
 

@@ -1,12 +1,6 @@
 <script lang="ts">
-	import { Application, Graphics, Container } from "pixi.js";
-	import {
-		
-		Virtualizer,
-		observeElementRect,
-		observeElementOffset,
-		elementScroll,
-	} from "@tanstack/virtual-core";
+import { Application, Graphics, Container } from "pixi.js";
+import { Virtualizer, observeElementRect, observeElementOffset, elementScroll } from "@tanstack/virtual-core";
 	import {
 		commits,
 		branches,
@@ -18,7 +12,7 @@
 		rightPanelMode,
 		showWip,
 	} from "$lib/store";
-	import { onDestroy, untrack } from "svelte";
+	import { onDestroy, onMount, untrack } from "svelte";
 	import type { BranchInfo, LanedCommit } from "$lib/types";
 
 	const MAX_CANVAS_PX = 16000;
@@ -31,33 +25,55 @@
 	const LINE_WIDTH = 1.5;
 	const CANVAS_WIDTH = 240;
 
+	const LANE_CSS_VARS = [
+		"--accent-blue",
+		"--accent-green",
+		"--accent-purple",
+		"--accent-orange",
+		"--accent-red",
+		"--accent-yellow",
+		"--accent-teal",
+		"--accent-pink",
+	];
+
+	const LANE_FALLBACKS = [
+		0x58a6ff, 0x3fb950, 0xbc8cff, 0xf0883e, 0xf85149, 0xd29922, 0x39d353,
+		0xff7b72,
+	];
+
 	function buildLaneColors(): number[] {
-		const cssVars = [
-			"--accent-blue",
-			"--accent-green",
-			"--accent-purple",
-			"--accent-orange",
-			"--accent-red",
-			"--accent-yellow",
-			"--accent-teal",
-			"--accent-pink",
-		];
-		const fallbacks = [
-			0x58a6ff, 0x3fb950, 0xbc8cff, 0xf0883e, 0xf85149, 0xd29922,
-			0x39d353, 0xff7b72,
-		];
-		return cssVars.map((v, i) => {
+		return LANE_CSS_VARS.map((v, i) => {
 			const raw = getComputedStyle(document.documentElement)
 				.getPropertyValue(v)
 				.trim();
-			if (!raw) return fallbacks[i];
+
+			if (!raw || raw === "") return LANE_FALLBACKS[i];
+
 			if (raw.startsWith("#")) {
 				const n = parseInt(raw.slice(1), 16);
-				return isNaN(n) ? fallbacks[i] : n;
+				// If white or invalid, use fallback
+				if (isNaN(n) || n === 0xffffff || n === 0) {
+					return LANE_FALLBACKS[i];
+				}
+				return n;
 			}
-			return fallbacks[i];
+
+			// Handle rgb() format
+			const m = raw.match(/rgb\((\d+),\s*(\d+),\s*(\d+)\)/);
+			if (m) {
+				const r = parseInt(m[1]);
+				const g = parseInt(m[2]);
+				const b = parseInt(m[3]);
+				const n = (r << 16) | (g << 8) | b;
+				if (n === 0xffffff || n === 0) return LANE_FALLBACKS[i];
+				return n;
+			}
+
+			return LANE_FALLBACKS[i];
 		});
 	}
+
+	let LANE_COLORS = [...LANE_FALLBACKS];
 	const LANE_COLORS_CSS = [
 		"#8b949e",
 		"#3fb950",
@@ -419,7 +435,7 @@
 		const ctx = canvas.getContext("2d");
 		if (!ctx) return;
 
-		const colors = buildLaneColors();
+		const colors = LANE_COLORS;
 		const toHex = (n: number) =>
 			"#" + (n & 0xffffff).toString(16).padStart(6, "0");
 
@@ -562,159 +578,172 @@
 	function drawGraph(list: LanedCommit[]) {
 		if (!app) return;
 
-		const colors = buildLaneColors();
-		console.log(
-			"[Pixi] Lane colors:",
-			colors.map((c) => "#" + c.toString(16)),
-		);
-
 		app.ticker.stop();
 
+		// ── Clear stage ──
 		app.stage.removeChildren();
-
 		const linesContainer = new Container();
 		const dotsContainer = new Container();
 		app.stage.addChild(linesContainer);
 		app.stage.addChild(dotsContainer);
 
-		const linesByColor = new Map<number, Graphics>();
-
-		const hasWip = true;
-
-		if (hasWip) {
-			const wipY = ROW_HEIGHT / 2;
-			const wipX = LANE_OFFSET;
-
-			const wipDot = new Graphics();
-			const radius = 6;
-			const dashCount = 8;
-
-			for (let i = 0; i < dashCount; i++) {
-				const startAngle = (i / dashCount) * Math.PI * 2;
-				const endAngle = ((i + 0.6) / dashCount) * Math.PI * 2;
-				wipDot.arc(wipX, wipY, radius, startAngle, endAngle);
-				wipDot.stroke({ width: 1.5, color: 0xe6edf3 });
-			}
-
-			wipDot.circle(wipX, wipY, 2);
-			wipDot.fill({ color: 0xe6edf3 });
-
-			dotsContainer.addChild(wipDot);
-
-			const lineG = getLineG(linesByColor, linesContainer, 0);
-			lineG.moveTo(LANE_OFFSET, wipY);
-			lineG.lineTo(LANE_OFFSET, ROW_HEIGHT);
+		// ── Resize canvas ──
+		const hasWip = totalChanges > 0;
+		const wipRows = hasWip ? 1 : 0;
+		const totalRows = list.length + wipRows;
+		const totalH = Math.max(totalRows * ROW_HEIGHT, 600);
+		if (app.renderer.height !== totalH) {
+			app.renderer.resize(GRAPH_COL_WIDTH, totalH);
 		}
 
-		// Compute lane states
-		const laneStates: Map<number, number>[] = [];
+		// ── One Graphics per color for line batching ──
+		const linesByColor = new Map<number, Graphics>();
+		function getLineG(colorIdx: number): Graphics {
+			const key = colorIdx % 8;
+			if (!linesByColor.has(key)) {
+				const g = new Graphics();
+				linesByColor.set(key, g);
+				linesContainer.addChild(g);
+			}
+			return linesByColor.get(key)!;
+		}
+
+		// ── Build hash→index for edge target lookup ──
+		const hashToIdx = new Map<string, number>();
+		list.forEach((lc, i) => hashToIdx.set(lc.commit.hash, i));
+
+		// ── Track active lanes (lane → colorIndex) ──
+		// Active = has a vertical line passing through this row
 		const active = new Map<number, number>();
 
 		for (let i = 0; i < list.length; i++) {
 			const lc = list[i];
-			active.set(lc.lane, lc.color_index);
-			laneStates.push(new Map(active));
+			const row = i + wipRows; // row 0 reserved for WIP if shown
+			const yTop = row * ROW_HEIGHT;
+			const yMid = yTop + ROW_HEIGHT / 2;
+			const yBot = yTop + ROW_HEIGHT;
 
-			for (const edge of lc.edges) {
-				if (
-					edge.edge_type === "Straight" ||
-					edge.edge_type === "Fork"
-				) {
-					active.set(edge.to_lane, edge.color_index);
-				} else if (edge.edge_type === "Merge") {
-					active.delete(edge.to_lane);
-					active.set(edge.from_lane, lc.color_index);
-				}
+			// This commit's lane is definitely active this row
+			active.set(lc.lane, lc.color_index);
+
+			// ── Draw vertical segments for ALL active lanes ──
+			for (const [lane, colorIdx] of active) {
+				const x = LANE_OFFSET + lane * LANE_SPACING;
+				const g = getLineG(colorIdx);
+				g.moveTo(x, yTop);
+				g.lineTo(x, yBot);
 			}
-			if (lc.edges.length === 0) {
+
+			// ── Draw merge/fork bezier curves ──
+			for (const edge of lc.edges) {
+				if (edge.edge_type === "Straight") continue;
+
+				const fromX = LANE_OFFSET + edge.from_lane * LANE_SPACING;
+				const toX = LANE_OFFSET + edge.to_lane * LANE_SPACING;
+				if (fromX === toX) continue; // same position, skip
+
+				const g = getLineG(edge.color_index);
+				g.moveTo(fromX, yMid);
+				g.bezierCurveTo(
+					fromX,
+					yMid + ROW_HEIGHT * 0.6,
+					toX,
+					yBot + ROW_HEIGHT * 0.4,
+					toX,
+					yBot + ROW_HEIGHT / 2,
+				);
+			}
+
+			// ── Update active lanes for NEXT row ──
+			const firstParentHash = lc.commit.parent_hashes[0];
+			if (!firstParentHash || !hashToIdx.has(firstParentHash)) {
+				// Root commit or parent outside loaded range
+				// Lane ends here — remove from active
 				active.delete(lc.lane);
 			}
-		}
+			// else: first parent continues same lane, stays in active
 
-		// Draw vertical lane lines — single Graphics per color (max 8)
-		for (let i = 0; i < list.length; i++) {
-			const rowIndex = i + 1;
-			for (const [lane, colorIdx] of laneStates[i]) {
-				const x = LANE_OFFSET + lane * LANE_SPACING;
-				const g = getLineG(linesByColor, linesContainer, colorIdx);
-				g.moveTo(x, rowIndex * ROW_HEIGHT);
-				g.lineTo(x, (rowIndex + 1) * ROW_HEIGHT);
-			}
-		}
-
-		// Draw bezier curves — same color Graphics
-		for (let i = 0; i < list.length; i++) {
-			const rowIndex = i + 1;
-			for (const edge of list[i].edges) {
+			// Merge source lanes: become active from here downward
+			for (const edge of lc.edges) {
 				if (edge.edge_type !== "Straight") {
-					const fromX = LANE_OFFSET + edge.from_lane * LANE_SPACING;
-					const toX = LANE_OFFSET + edge.to_lane * LANE_SPACING;
-					const fromY = rowIndex * ROW_HEIGHT + ROW_HEIGHT / 2;
-					const toY = (rowIndex + 1) * ROW_HEIGHT + ROW_HEIGHT / 2;
-
-					const g = getLineG(
-						linesByColor,
-						linesContainer,
-						edge.color_index,
-					);
-					g.moveTo(fromX, fromY);
-					g.bezierCurveTo(
-						fromX,
-						fromY + ROW_HEIGHT * 0.6,
-						toX,
-						toY - ROW_HEIGHT * 0.6,
-						toX,
-						toY,
-					);
+					active.set(edge.to_lane, edge.color_index);
 				}
 			}
 		}
 
-		// Stroke all line Graphics at once
+		// ── Stroke all line batches ──
 		for (const [colorIdx, g] of linesByColor) {
 			g.stroke({
 				width: LINE_WIDTH,
-				color: colors[colorIdx % colors.length],
+				color: LANE_COLORS[colorIdx % LANE_COLORS.length],
+				alpha: 1.0,
 			});
 		}
 
-		// Draw dots on top
-		let maxLane = 0;
+		// ── WIP dashed dot ──
+		if (hasWip) {
+			const x = LANE_OFFSET;
+			const y = ROW_HEIGHT / 2;
+			const wipDot = new Graphics();
+			for (let seg = 0; seg < 8; seg++) {
+				const a1 = (seg / 8) * Math.PI * 2;
+				const a2 = ((seg + 0.55) / 8) * Math.PI * 2;
+				wipDot.arc(x, y, DOT_RADIUS + 1, a1, a2);
+			}
+			wipDot.stroke({ width: 1.5, color: 0xe6edf3, alpha: 0.6 });
+			wipDot.circle(x, y, 2);
+			wipDot.fill({ color: 0xe6edf3, alpha: 0.6 });
+			dotsContainer.addChild(wipDot);
+			// Vertical line from WIP down to first commit lane 0
+			if (list.length > 0) {
+				const g = getLineG(list[0].color_index);
+				g.moveTo(LANE_OFFSET, y);
+				g.lineTo(LANE_OFFSET, ROW_HEIGHT);
+			}
+		}
+
+		// ── Commit dots (drawn on top) ──
 		for (let i = 0; i < list.length; i++) {
 			const lc = list[i];
-			const rowIndex = i + 1;
-			if (lc.lane > maxLane) maxLane = lc.lane;
+			const row = i + wipRows;
 			const x = LANE_OFFSET + lc.lane * LANE_SPACING;
-			const y = rowIndex * ROW_HEIGHT + ROW_HEIGHT / 2;
-			const color = colors[lc.color_index % colors.length];
+			const y = row * ROW_HEIGHT + ROW_HEIGHT / 2;
+			const color = LANE_COLORS[lc.color_index % LANE_COLORS.length];
 
 			const dot = new Graphics();
-			dot.circle(x, y, DOT_RADIUS + 1.5);
-			dot.fill({ color: 0xffffff });
+
+			// Subtle outer ring
+			dot.circle(x, y, DOT_RADIUS + 2);
+			dot.fill({ color: 0xffffff, alpha: 0.08 });
+
+			// Main dot
 			dot.circle(x, y, DOT_RADIUS);
 			dot.fill({ color });
 
 			dot.eventMode = "static";
 			dot.cursor = "pointer";
-			dot.on("pointerover", () => dot.scale.set(1.3));
-			dot.on("pointerout", () => dot.scale.set(1.0));
-			dot.on("pointertap", () => selectCommit(lc));
+			const captured = lc;
+			dot.on("pointerover", () => {
+				dot.scale.set(1.4);
+				app!.renderer.render(app!.stage);
+			});
+			dot.on("pointerout", () => {
+				dot.scale.set(1.0);
+				app!.renderer.render(app!.stage);
+			});
+			dot.on("pointertap", () => selectCommit(captured));
 
 			dotsContainer.addChild(dot);
 		}
 
-		const totalHeight = (list.length + 1) * ROW_HEIGHT;
-		const canvasHeight = Math.min(totalHeight, MAX_CANVAS_PX);
-		app.renderer.resize(GRAPH_COL_WIDTH, canvasHeight);
 		app.renderer.render(app.stage);
 		app.ticker.start();
+        
+        // Sync scroll position so graph lines up with list
+        queueMicrotask(() => onScroll());
 
-		// Sync scroll position so graph lines up with list on first paint
-		queueMicrotask(() => onScroll());
-
-		console.log(
-			`[GitFast] Graph: ${list.length} commits, ${maxLane + 1} lanes`,
-		);
+		const maxLane = list.reduce((m, c) => Math.max(m, c.lane), 0);
+		console.log(`[GitFast] Graph: ${list.length} commits, ${maxLane + 1} lanes`);
 	}
 
 	// Scroll: GPU stage.y transform only. Zero CPU. No render(), no drawGraph().
@@ -789,6 +818,24 @@
 	function handleWipClick() {
 		showWip();
 	}
+
+	onMount(async () => {
+		// Wait one frame for CSS variables to be fully applied
+		await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+
+		LANE_COLORS = buildLaneColors();
+		console.log(
+			"[Pixi] Lane colors:",
+			LANE_COLORS.map((c) => "#" + c.toString(16).padStart(6, "0")),
+		);
+
+		// If Pixi is already initialized, redraw with the updated colors
+		if (isInitialized && app && commitList.length > 0) {
+			untrack(() => {
+				drawGraph(commitList);
+			});
+		}
+	});
 </script>
 
 <div class="graph-root">

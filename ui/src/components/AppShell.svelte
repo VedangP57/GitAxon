@@ -202,11 +202,19 @@
 	let profiles = $state<SshProfile[]>([]);
 	let showAccountMenu = $state(false);
 	let showSwitchModal = $state(false);
-	let switchModalProfile = $state<SshProfile | null>(null);
+	let selectedProfile = $state<SshProfile | null>(null);
 	let switchName = $state("");
 	let switchEmail = $state("");
 	let showPushWarning = $state(false);
 	let pendingPushIdentity = $state<GitIdentity | null>(null);
+
+	// Pre-fill name from current identity
+	$effect(() => {
+		if (showSwitchModal) {
+			switchName = identity?.name ?? "";
+			switchEmail = ""; // user must enter email
+		}
+	});
 
 	$effect(() => {
 		const repo = $currentRepo;
@@ -215,26 +223,42 @@
 				.then((id) => {
 					identity = id;
 				})
-				.catch(() => (identity = null));
+				.catch((e) => {
+					identity = null;
+				});
 			getSshProfiles()
-				.then((p) => (profiles = p))
-				.catch(() => (profiles = []));
+				.then((p) => {
+					profiles = p;
+				})
+				.catch((e) => {
+					profiles = [];
+				});
 		} else {
 			identity = null;
 			profiles = [];
 		}
 	});
 
+	function clickOutside(node: HTMLElement, handler: () => void) {
+		const handleClick = (e: MouseEvent) => {
+			if (!node.contains(e.target as Node)) handler();
+		};
+		document.addEventListener("click", handleClick);
+		return {
+			destroy() {
+				document.removeEventListener("click", handleClick);
+			},
+		};
+	}
+
 	function openSwitchModal(profile: SshProfile) {
-		switchModalProfile = profile;
-		switchName = identity?.name ?? "";
-		switchEmail = "";
+		selectedProfile = profile;
 		showSwitchModal = true;
 	}
 
 	async function confirmSwitch() {
 		const repo = $currentRepo;
-		const profile = switchModalProfile;
+		const profile = selectedProfile;
 		if (!repo || !profile) return;
 		const name = switchName.trim();
 		const email = switchEmail.trim();
@@ -242,6 +266,7 @@
 			showToast("Please enter an email address", "error");
 			return;
 		}
+
 		try {
 			await switchRepoIdentity(repo, profile.host_alias, name, email);
 			identity = await getRepoIdentity(repo);
@@ -259,27 +284,13 @@
 		try {
 			await push(repo, "origin", currentBranchName, false);
 			await loadRepo(repo);
-			showToast("Push completed", "success");
+			showToast("Pushed successfully", "success");
 		} catch (e) {
 			showToast(e instanceof Error ? e.message : String(e), "error");
+		} finally {
+			isLoading.set(false);
+			showPushWarning = false;
 		}
-	}
-
-	function shouldWarnPush(id: GitIdentity): boolean {
-		// Personal key pushing to office repo
-		if (id.ssh_key.includes("vedangp57") && id.remote_url.includes("elvee-jewels")) {
-			return true;
-		}
-		// Office key pushing to personal repo (not elvee-jewels, not Sarvadhi-Solutions)
-		if (
-			id.ssh_key.includes("id_ed25519") &&
-			!id.ssh_key.includes("vedangp57") &&
-			!id.remote_url.includes("elvee-jewels") &&
-			!id.remote_url.includes("Sarvadhi-Solutions")
-		) {
-			return true;
-		}
-		return false;
 	}
 
 	async function onPush() {
@@ -288,16 +299,26 @@
 			showToast("No branch selected or detached HEAD", "error");
 			return;
 		}
+		isLoading.set(true);
+
 		try {
+			// Get fresh identity check before push
 			const id = await getRepoIdentity(repo);
-			if (shouldWarnPush(id)) {
+			identity = id;
+
+			// Show warning if account seems wrong
+			if (!id.is_correct) {
 				showPushWarning = true;
 				pendingPushIdentity = id;
+				isLoading.set(false);
 				return;
 			}
+
+			// Account correct, proceed with push
 			await executePush();
 		} catch (e) {
 			showToast(e instanceof Error ? e.message : String(e), "error");
+			isLoading.set(false);
 		}
 	}
 </script>
@@ -555,64 +576,78 @@
 			</button>
 			<div class="account-dropdown-wrap">
 				<!-- svelte-ignore a11y_no_static_element_interactions -->
-				<button
-					class="account-btn"
-					class:account-warning={identity && !identity.is_correct}
-					onclick={() => (showAccountMenu = !showAccountMenu)}
-					title="Git account: {identity?.account_label ?? '...'}"
-				>
-					<span class="account-avatar">
-						{identity?.name?.[0]?.toUpperCase() ?? '?'}
-					</span>
-					<span class="account-label">{identity?.account_label ?? '...'}</span>
-					<span class="account-email">{identity?.email ?? ''}</span>
-				</button>
+					<button
+						class="account-btn"
+						class:account-warning={identity && !identity.is_correct}
+						onclick={(e) => {
+							e.stopPropagation();
+							showAccountMenu = !showAccountMenu;
+						}}
+						title={identity ? `${identity.account_label} — ${identity.email}` : 'Loading...'}
+					>
+						<div
+							class="account-avatar"
+							style="background: {identity?.is_correct ? 'var(--accent-blue)' : 'var(--accent-red)'}"
+						>
+							{identity?.name?.[0]?.toUpperCase() ?? '?'}
+						</div>
+						<div class="account-text">
+							<span class="account-label">
+								{identity?.account_label ?? 'Loading...'}
+							</span>
+							<span class="account-email">
+								{identity?.email ?? ''}
+							</span>
+						</div>
+						{#if identity && !identity.is_correct}
+							<span class="warning-badge" title="Wrong account for this repo">⚠</span>
+						{/if}
+					</button>
 				{#if showAccountMenu}
 					<!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
 					<div
 						class="tb-dropdown-backdrop account-backdrop"
 						onclick={() => (showAccountMenu = false)}
 					></div>
-					<div class="account-menu">
-						<div class="account-menu-header">
-							<span>Switch Git Account</span>
-							<span class="current-repo-label"> for {repoName}</span>
+					<div class="account-menu" use:clickOutside={() => (showAccountMenu = false)}>
+						<div class="account-menu-title">Git Account</div>
+						<div class="account-menu-repo">
+							for <strong>{repoName}</strong>
 						</div>
 
-						<div class="account-menu-current">
-							<span class="menu-label">Current</span>
-							<div class="account-row active">
-								<div class="account-avatar-lg">
-									{identity?.name?.[0]?.toUpperCase() ?? '?'}
-								</div>
-								<div class="account-info">
-									<span class="account-name">{identity?.name ?? '—'}</span>
-									<span class="account-email-small">{identity?.email ?? '—'}</span>
-									<span class="account-host">{identity?.ssh_host ?? '—'}</span>
-								</div>
-								<span class="checkmark">✓</span>
-							</div>
-						</div>
-
-						<div class="account-menu-profiles">
-							<span class="menu-label">Switch to</span>
-							{#each profiles.filter((p) => p.host_alias !== identity?.ssh_host) as profile}
-								<!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
+						{#each profiles as profile}
+							<!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
+							<div
+								class="account-profile-row"
+								class:active={profile.host_alias === identity?.ssh_host}
+								onclick={() => {
+									if (profile.host_alias !== identity?.ssh_host) {
+										selectedProfile = profile;
+										showSwitchModal = true;
+										showAccountMenu = false;
+									}
+								}}
+							>
 								<div
-									class="account-row clickable"
-									onclick={() => openSwitchModal(profile)}
+									class="profile-avatar"
+									style="background: {profile.host_alias === identity?.ssh_host
+										? 'var(--accent-green)'
+										: 'var(--accent-blue)'}"
 								>
-									<div class="account-avatar-lg">
-										{profile.label[0]?.toUpperCase() ?? '?'}
-									</div>
-									<div class="account-info">
-										<span class="account-name">{profile.label}</span>
-										<span class="account-host">{profile.host_alias}</span>
-										<span class="account-key">{profile.identity_file}</span>
-									</div>
+									{profile.label[0].toUpperCase()}
 								</div>
-							{/each}
-						</div>
+								<div class="profile-info">
+									<span class="profile-label">{profile.label}</span>
+									<span class="profile-host">{profile.host_alias}</span>
+									<span class="profile-key">{profile.identity_file}</span>
+								</div>
+								{#if profile.host_alias === identity?.ssh_host}
+									<span class="profile-active">✓ Active</span>
+								{:else}
+									<span class="profile-switch">Switch →</span>
+								{/if}
+							</div>
+						{/each}
 					</div>
 				{/if}
 			</div>
@@ -662,38 +697,47 @@
 	</div>
 
 	<!-- Switch account modal -->
-	{#if showSwitchModal}
+	{#if showSwitchModal && selectedProfile}
 		<!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
-		<div
-			class="push-warning-overlay"
-			onclick={(e) => e.target === e.currentTarget && (showSwitchModal = false)}
-		>
-			<div class="switch-modal" onclick={(e) => e.stopPropagation()}>
-				<h3>Switch to {switchModalProfile?.label ?? ''} account</h3>
-				<p class="switch-modal-sub">for {repoName}</p>
-				<div class="switch-modal-form">
+		<div class="modal-overlay" onclick={() => (showSwitchModal = false)}>
+			<div class="modal" onclick={(e) => e.stopPropagation()}>
+				<h3>Switch to {selectedProfile.label}</h3>
+				<p class="modal-sub">
+					This will update the remote URL and local git config for
+					<strong>{repoName}</strong>
+				</p>
+
+				<div class="form-group">
 					<label>Name</label>
-					<input
-						type="text"
-						bind:value={switchName}
-						placeholder="Your name"
-					/>
+					<input bind:value={switchName} placeholder="Your name" class="form-input" />
+				</div>
+
+				<div class="form-group">
 					<label>Email</label>
 					<input
-						type="email"
 						bind:value={switchEmail}
 						placeholder="your@email.com"
+						type="email"
+						class="form-input"
 					/>
 				</div>
-				<p class="switch-modal-note">
-					This will set local git config user.name and user.email, and update the
-					remote URL to use the correct SSH host.
-				</p>
-				<div class="switch-modal-actions">
-					<button class="btn-secondary" onclick={() => (showSwitchModal = false)}>
+
+				<div class="modal-info">
+					<span>SSH Key: {selectedProfile.identity_file}</span>
+					<span>Remote will use: git@{selectedProfile.host_alias}:...</span>
+				</div>
+
+				<div class="modal-actions">
+					<button
+						class="btn-primary"
+						disabled={!switchName || !switchEmail}
+						onclick={confirmSwitch}
+					>
+						Switch Account
+					</button>
+					<button class="btn-cancel" onclick={() => (showSwitchModal = false)}>
 						Cancel
 					</button>
-					<button class="btn-primary" onclick={confirmSwitch}>Switch Account</button>
 				</div>
 			</div>
 		</div>
@@ -742,6 +786,7 @@
 			</div>
 		</div>
 	{/if}
+
 
 	<Toast />
 </div>
@@ -1040,48 +1085,55 @@
 	.account-btn {
 		display: flex;
 		align-items: center;
-		gap: 6px;
+		gap: 8px;
 		padding: 4px 10px;
 		border-radius: 6px;
 		border: 1px solid var(--border);
 		background: var(--bg-tertiary);
 		cursor: pointer;
-		font-size: 12px;
 		color: var(--text-secondary);
+		height: 32px;
 	}
 	.account-btn:hover {
 		background: var(--bg-hover);
 		color: var(--text-primary);
 	}
-	.account-btn.account-warning {
+	.account-warning {
 		border-color: var(--accent-red) !important;
-		color: var(--accent-red) !important;
 	}
 	.account-avatar {
-		width: 20px;
-		height: 20px;
+		width: 22px;
+		height: 22px;
 		border-radius: 50%;
-		background: var(--accent-blue);
-		color: #0a0a0a;
 		display: flex;
 		align-items: center;
 		justify-content: center;
 		font-size: 11px;
-		font-weight: 600;
+		font-weight: 700;
+		color: white;
+		flex-shrink: 0;
+	}
+	.account-text {
+		display: flex;
+		flex-direction: column;
+		align-items: flex-start;
+		gap: 0px;
 	}
 	.account-label {
-		max-width: 100px;
-		overflow: hidden;
-		text-overflow: ellipsis;
-		white-space: nowrap;
+		font-size: 11px;
+		font-weight: 600;
+		color: var(--text-primary);
+		line-height: 1.2;
 	}
-	.account-btn .account-email {
+	.account-email {
 		font-size: 10px;
 		color: var(--text-muted);
-		max-width: 80px;
-		overflow: hidden;
-		text-overflow: ellipsis;
-		white-space: nowrap;
+		line-height: 1.2;
+	}
+	.warning-badge {
+		color: var(--accent-red);
+		font-size: 14px;
+		margin-left: 4px;
 	}
 
 	.account-menu {
@@ -1097,85 +1149,76 @@
 		box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
 		z-index: 100;
 	}
-	.account-menu-header {
+	.account-menu-title {
 		font-size: 12px;
 		font-weight: 600;
 		color: var(--text-primary);
+		margin-bottom: 4px;
+	}
+	.account-menu-repo {
+		font-size: 11px;
+		color: var(--text-muted);
 		margin-bottom: 12px;
 		padding-bottom: 8px;
 		border-bottom: 1px solid var(--border);
 	}
-	.current-repo-label {
-		font-weight: 400;
-		color: var(--text-muted);
-	}
-	.account-menu-current,
-	.account-menu-profiles {
-		margin-bottom: 12px;
-	}
-	.menu-label {
-		display: block;
-		font-size: 10px;
-		text-transform: uppercase;
-		letter-spacing: 0.5px;
-		color: var(--text-muted);
-		margin-bottom: 6px;
-	}
-	.account-row {
+	.account-profile-row {
 		display: flex;
 		align-items: center;
 		gap: 10px;
-		padding: 8px 10px;
+		padding: 8px 12px;
 		border-radius: 6px;
+		cursor: pointer;
 		margin-bottom: 4px;
 	}
-	.account-row.active {
-		background: var(--bg-secondary);
-	}
-	.account-row.clickable {
-		cursor: pointer;
-	}
-	.account-row.clickable:hover {
+	.account-profile-row:hover {
 		background: var(--bg-hover);
 	}
-	.account-avatar-lg {
+	.account-profile-row.active {
+		background: var(--bg-secondary);
+		cursor: default;
+	}
+	.profile-avatar {
 		width: 32px;
 		height: 32px;
 		border-radius: 50%;
-		background: var(--accent-blue);
-		color: #0a0a0a;
 		display: flex;
 		align-items: center;
 		justify-content: center;
 		font-size: 14px;
-		font-weight: 600;
+		font-weight: 700;
+		color: white;
 		flex-shrink: 0;
 	}
-	.account-info {
+	.profile-info {
 		flex: 1;
-		min-width: 0;
 		display: flex;
 		flex-direction: column;
-		gap: 2px;
+		min-width: 0;
 	}
-	.account-info .account-name {
-		font-size: 13px;
-		font-weight: 500;
+	.profile-label {
+		font-size: 12px;
+		font-weight: 600;
 		color: var(--text-primary);
 	}
-	.account-email-small,
-	.account-host,
-	.account-key {
-		font-size: 11px;
+	.profile-host,
+	.profile-key {
+		font-size: 10px;
 		color: var(--text-muted);
 	}
-	.account-key {
-		font-size: 10px;
-		opacity: 0.8;
-	}
-	.checkmark {
+	.profile-active {
+		font-size: 11px;
 		color: var(--accent-green);
-		font-size: 14px;
+		font-weight: 600;
+	}
+	.profile-switch {
+		font-size: 11px;
+		color: var(--accent-blue);
+		opacity: 0;
+		transition: opacity 0.2s;
+	}
+	.account-profile-row:hover .profile-switch {
+		opacity: 1;
 	}
 
 	/* ── Switch modal & Push warning ── */
@@ -1249,65 +1292,95 @@
 		color: var(--text-secondary);
 	}
 
-	/* Switch account modal */
-	.switch-modal {
+	/* Modern Modals */
+	.modal-overlay {
+		position: fixed;
+		inset: 0;
+		background: rgba(0, 0, 0, 0.7);
+		backdrop-filter: blur(4px);
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		z-index: 1000;
+	}
+	.modal {
 		background: var(--bg-secondary);
 		border: 1px solid var(--border);
-		border-radius: 8px;
+		border-radius: 12px;
 		padding: 24px;
-		width: 380px;
-		text-align: left;
+		width: 400px;
+		box-shadow: 0 20px 40px rgba(0, 0, 0, 0.5);
 	}
-	.switch-modal h3 {
-		font-size: 16px;
-		color: var(--text-primary);
-		margin-bottom: 4px;
+	.modal h3 {
+		margin-bottom: 8px;
+		font-size: 18px;
 	}
-	.switch-modal-sub {
-		font-size: 12px;
+	.modal-sub {
+		font-size: 13px;
 		color: var(--text-muted);
+		margin-bottom: 20px;
+		line-height: 1.5;
+	}
+	.form-group {
 		margin-bottom: 16px;
 	}
-	.switch-modal-form {
-		display: flex;
-		flex-direction: column;
-		gap: 8px;
-		margin-bottom: 16px;
-	}
-	.switch-modal-form label {
+	.form-group label {
+		display: block;
 		font-size: 12px;
 		color: var(--text-secondary);
+		margin-bottom: 6px;
 	}
-	.switch-modal-form input {
-		padding: 8px 10px;
-		border-radius: 4px;
-		border: 1px solid var(--border);
+	.form-input {
+		width: 100%;
+		padding: 10px 12px;
 		background: var(--bg-tertiary);
+		border: 1px solid var(--border);
+		border-radius: 6px;
 		color: var(--text-primary);
-		font-size: 13px;
+		font-size: 14px;
 	}
-	.switch-modal-note {
+	.form-input:focus {
+		border-color: var(--accent-blue);
+		outline: none;
+	}
+	.modal-info {
+		background: var(--bg-tertiary);
+		padding: 12px;
+		border-radius: 6px;
+		margin-bottom: 24px;
+		display: flex;
+		flex-direction: column;
+		gap: 4px;
 		font-size: 11px;
 		color: var(--text-muted);
-		line-height: 1.5;
-		margin-bottom: 16px;
 	}
-	.switch-modal-actions {
+	.modal-actions {
 		display: flex;
-		gap: 8px;
 		justify-content: flex-end;
+		gap: 12px;
 	}
 	.btn-primary {
 		background: var(--accent-blue);
-		color: #0a0a0a;
+		color: white;
 		border: none;
-		border-radius: 4px;
-		padding: 8px 16px;
+		border-radius: 6px;
+		padding: 10px 20px;
+		font-weight: 600;
 		cursor: pointer;
-		font-size: 13px;
-		font-weight: 500;
 	}
-	.btn-primary:hover {
-		opacity: 0.9;
+	.btn-primary:disabled {
+		opacity: 0.5;
+		cursor: not-allowed;
+	}
+	.btn-cancel {
+		background: transparent;
+		color: var(--text-secondary);
+		border: 1px solid var(--border);
+		border-radius: 6px;
+		padding: 10px 20px;
+		cursor: pointer;
+	}
+	.btn-cancel:hover {
+		background: var(--bg-hover);
 	}
 </style>

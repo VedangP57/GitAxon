@@ -7,7 +7,7 @@ pub use lanes::{assign_lanes, Edge, EdgeType, LanedCommit};
 use crate::cache::CommitNode;
 use crate::errors::{GitfastError, GitfastResult};
 use gix::revision::walk::Sorting;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 /// Opens a gix repository at the given path.
 pub async fn open_repo(path: &str) -> GitfastResult<gix::Repository> {
@@ -22,6 +22,85 @@ pub async fn open_repo(path: &str) -> GitfastResult<gix::Repository> {
     })
     .await
     .map_err(|e| GitfastError::GitOperationFailed(e.to_string()))?
+}
+
+/// Temporal topological sort: newest commits at top, topology always valid.
+/// DFS from newest commits first, assign index after all descendants are assigned.
+/// Result: newest-first order suitable for GitKraken-style graph display.
+fn temporal_topological_sort(commits: Vec<CommitNode>) -> Vec<CommitNode> {
+    if commits.is_empty() {
+        return commits;
+    }
+
+    // Build children map (each commit -> list of child hashes)
+    let mut children: HashMap<String, Vec<String>> = HashMap::new();
+    for c in &commits {
+        for parent in &c.parent_hashes {
+            children
+                .entry(parent.clone())
+                .or_default()
+                .push(c.hash.clone());
+        }
+    }
+
+    let commit_map: HashMap<String, CommitNode> = commits
+        .into_iter()
+        .map(|c| (c.hash.clone(), c))
+        .collect();
+
+    let mut result: Vec<CommitNode> = Vec::new();
+    let mut explored: HashSet<String> = HashSet::new();
+
+    // Sort all commits by timestamp newest first
+    // This ensures DFS visits newest children first
+    let mut all_commits: Vec<&CommitNode> = commit_map.values().collect();
+    all_commits.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+
+    fn dfs(
+        hash: &str,
+        commit_map: &HashMap<String, CommitNode>,
+        children: &HashMap<String, Vec<String>>,
+        explored: &mut HashSet<String>,
+        result: &mut Vec<CommitNode>,
+    ) {
+        if explored.contains(hash) {
+            return;
+        }
+        explored.insert(hash.to_string());
+
+        // Visit children (commits that come before this in history)
+        // sorted by timestamp newest first
+        if let Some(child_hashes) = children.get(hash) {
+            let mut sorted_children = child_hashes.clone();
+            sorted_children.sort_by(|a, b| {
+                let ta = commit_map.get(a).map(|c| c.timestamp).unwrap_or(0);
+                let tb = commit_map.get(b).map(|c| c.timestamp).unwrap_or(0);
+                tb.cmp(&ta) // newest first
+            });
+            for child in sorted_children {
+                dfs(&child, commit_map, children, explored, result);
+            }
+        }
+
+        // Add this commit AFTER all descendants
+        if let Some(commit) = commit_map.get(hash) {
+            result.push(commit.clone());
+        }
+    }
+
+    // Run DFS from each unvisited commit, newest first
+    for commit in &all_commits {
+        dfs(
+            &commit.hash,
+            &commit_map,
+            &children,
+            &mut explored,
+            &mut result,
+        );
+    }
+
+    // DFS adds each commit after its descendants, so result is already newest-first
+    result
 }
 
 /// Collects all ref tips (branches, remotes, tags) as gix ObjectIds for walking the full graph.
@@ -150,7 +229,12 @@ pub async fn get_commits(
                 }
             }
         }
-        Ok::<_, GitfastError>(commits)
+        let mut sorted = temporal_topological_sort(commits);
+        // Ensure newest-first for lane algorithm (children must be processed before parents)
+        if !sorted.is_empty() && sorted.first().unwrap().parent_hashes.is_empty() {
+            sorted.reverse();
+        }
+        Ok::<_, GitfastError>(sorted)
     })
     .await
     .map_err(|e| GitfastError::GitOperationFailed(e.to_string()))?
