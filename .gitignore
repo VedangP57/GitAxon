@@ -5,6 +5,7 @@
 src-tauri/target/
 **/*.rs.bk
 *.pdb
+.cursor
 
 # Cargo.lock is included for binary crates (like this app)
 # Remove the line below if you want to track Cargo.lock
