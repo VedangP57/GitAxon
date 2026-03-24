@@ -319,3 +319,58 @@ pub fn delete_untracked(repo: &Repository, file_path: &str) -> Result<()> {
     }
     Ok(())
 }
+
+pub fn cherry_pick(repo_path: &str, commit_hash: &str) -> Result<String, String> {
+    let output = std::process::Command::new("git")
+        .current_dir(repo_path)
+        .arg("cherry-pick")
+        .arg(commit_hash)
+        .output()
+        .map_err(|e| format!("Failed to run git: {}", e))?;
+
+    if output.status.success() {
+        Ok(format!("Cherry-picked commit {}", &commit_hash[..7]))
+    } else {
+        Err(String::from_utf8_lossy(&output.stderr).trim().to_string())
+    }
+}
+
+pub fn revert_commit(repo_path: &str, commit_hash: &str) -> Result<String, String> {
+    let output = std::process::Command::new("git")
+        .current_dir(repo_path)
+        .arg("revert")
+        .arg("--no-edit")
+        .arg(commit_hash)
+        .output()
+        .map_err(|e| format!("Failed to run git: {}", e))?;
+
+    if output.status.success() {
+        Ok(format!("Reverted commit {}", &commit_hash[..7]))
+    } else {
+        Err(String::from_utf8_lossy(&output.stderr).trim().to_string())
+    }
+}
+
+pub fn reset_to_commit(
+    repo_path: &str,
+    commit_hash: &str,
+    mode: &str, // "soft", "mixed", "hard"
+) -> Result<String, String> {
+    let output = std::process::Command::new("git")
+        .current_dir(repo_path)
+        .arg("reset")
+        .arg(format!("--{}", mode))
+        .arg(commit_hash)
+        .output()
+        .map_err(|e| format!("Failed to run git: {}", e))?;
+
+    if output.status.success() {
+        Ok(format!("Reset to {} ({})", &commit_hash[..7], mode))
+    } else {
+        Err(String::from_utf8_lossy(&output.stderr).trim().to_string())
+    }
+}
+
+pub fn copy_commit_hash(hash: &str) -> String {
+    hash.to_string()
+}

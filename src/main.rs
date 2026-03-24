@@ -1,11 +1,11 @@
 //! Gitfast-core CLI.
 
 use clap::{Parser, Subcommand};
-use gitfast_core::branches;
-use gitfast_core::diff;
-use gitfast_core::graph;
-use gitfast_core::remotes;
-use gitfast_core::staging;
+use gitaxon::branches;
+use gitaxon::diff;
+use gitaxon::graph;
+use gitaxon::remotes;
+use gitaxon::staging;
 use std::path::PathBuf;
 
 #[derive(Parser)]
@@ -215,14 +215,14 @@ async fn run_pull(repo: PathBuf, remote: String, branch: String) {
 
 async fn run_identity(repo: PathBuf) {
     let path = repo.to_string_lossy();
-    let profiles = gitfast_core::identity::get_ssh_profiles();
+    let profiles = gitaxon::identity::get_ssh_profiles();
     println!("SSH Profiles found: {}", profiles.len());
     for p in &profiles {
         println!("  Host: {} | Key: {} | Label: {}", 
             p.host_alias, p.identity_file, p.label);
     }
 
-    match gitfast_core::identity::get_repo_identity(path.as_ref()) {
+    match gitaxon::identity::get_repo_identity(path.as_ref()) {
         Ok(identity) => println!("Identity: {:?}", identity),
         Err(e) => println!("Error getting identity: {}", e),
     }

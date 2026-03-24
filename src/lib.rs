@@ -22,7 +22,7 @@ pub use errors::{GitfastError, GitfastResult};
 pub use graph::{assign_lanes, Edge, EdgeType, LanedCommit};
 
 // Types - diff
-pub use diff::{DiffFile, DiffHunk, DiffLine, FileStatus, LineType};
+pub use diff::{BlameLine, DiffFile, DiffHunk, DiffLine, FileStatus, LineType};
 
 // Types - staging
 pub use staging::{IndexEntry, StagingStatus};

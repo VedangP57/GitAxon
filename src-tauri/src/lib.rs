@@ -6,7 +6,7 @@ use tauri::{AppHandle, Emitter};
 #[cfg(target_os = "macos")]
 use libc;
 
-use gitfast_core::cache::Cache;
+use gitaxon::cache::Cache;
 
 struct StatusCache {
     repo_path: String,
@@ -19,11 +19,11 @@ static STATUS_CACHE: Mutex<Option<StatusCache>> = Mutex::new(None);
 #[tauri::command]
 async fn get_full_status(
     repo_path: String,
-) -> Result<Vec<gitfast_core::watcher::FileStatus>, String> {
+) -> Result<Vec<gitaxon::watcher::FileStatus>, String> {
     // Ensure repo status is initialized
-    gitfast_core::watcher::init_status(&repo_path)?;
+    gitaxon::watcher::init_status(&repo_path)?;
 
-    let state = gitfast_core::watcher::REPO_STATUS
+    let state = gitaxon::watcher::REPO_STATUS
         .read()
         .map_err(|e| e.to_string())?;
 
@@ -47,13 +47,13 @@ async fn start_file_watch(
     let app_handle = app.clone();
     let repo_path_str = repo_path.clone();
 
-    gitfast_core::watcher::start_watching(&repo_path, move || {
+    gitaxon::watcher::start_watching(&repo_path, move || {
         let app = app_handle.clone();
         let repo = repo_path_str.clone();
 
         // Compute status diff on a background thread
         std::thread::spawn(move || {
-            match gitfast_core::watcher::update_status(&repo) {
+            match gitaxon::watcher::update_status(&repo) {
                 Ok(patch) => {
                     if patch.added.is_empty()
                         && patch.removed.is_empty()
@@ -91,7 +91,7 @@ async fn start_file_watch(
 
 #[tauri::command]
 async fn stop_file_watch() -> Result<(), String> {
-    gitfast_core::watcher::stop_watching();
+    gitaxon::watcher::stop_watching();
     Ok(())
 }
 
@@ -101,14 +101,14 @@ async fn get_commits(
     limit: usize,
     offset: usize,
 ) -> Result<String, String> {
-    gitfast_core::graph::get_laned_commits_json(&repo_path, limit, offset)
+    gitaxon::graph::get_laned_commits_json(&repo_path, limit, offset)
         .await
         .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 async fn get_branches(repo_path: String) -> Result<String, String> {
-    gitfast_core::branches::list_branches_json(&repo_path)
+    gitaxon::branches::list_branches_json(&repo_path)
         .await
         .map_err(|e| e.to_string())
 }
@@ -136,7 +136,7 @@ async fn get_status(repo_path: String) -> Result<String, String> {
     // PREV_STATUS is only used by the watcher for diff detection.
     let entries = tokio::task::spawn_blocking({
         let path = repo_path.clone();
-        move || gitfast_core::watcher::get_full_status_and_sync_snapshot(&path)
+        move || gitaxon::watcher::get_full_status_and_sync_snapshot(&path)
     })
     .await
     .map_err(|e| e.to_string())?
@@ -158,8 +158,12 @@ async fn get_status(repo_path: String) -> Result<String, String> {
 }
 
 #[tauri::command]
-async fn stage_file(repo_path: String, file_path: String) -> Result<(), String> {
-    gitfast_core::staging::stage_file(&repo_path, &file_path)
+async fn stage_file(
+    repo_path: String,
+    file_path: String,
+    app: AppHandle,
+) -> Result<(), String> {
+    gitaxon::staging::stage_file(&repo_path, &file_path)
         .await
         .map_err(|e| e.to_string())?;
 
@@ -169,12 +173,18 @@ async fn stage_file(repo_path: String, file_path: String) -> Result<(), String> 
         *cache = None;
     }
 
+    let _ = app.emit("git-state-changed", repo_path.clone());
+
     Ok(())
 }
 
 #[tauri::command]
-async fn unstage_file(repo_path: String, file_path: String) -> Result<(), String> {
-    gitfast_core::staging::unstage_file(&repo_path, &file_path)
+async fn unstage_file(
+    repo_path: String,
+    file_path: String,
+    app: AppHandle,
+) -> Result<(), String> {
+    gitaxon::staging::unstage_file(&repo_path, &file_path)
         .await
         .map_err(|e| e.to_string())?;
 
@@ -183,12 +193,14 @@ async fn unstage_file(repo_path: String, file_path: String) -> Result<(), String
         *cache = None;
     }
 
+    let _ = app.emit("git-state-changed", repo_path.clone());
+
     Ok(())
 }
 
 #[tauri::command]
-async fn unstage_all(repo_path: String) -> Result<(), String> {
-    gitfast_core::staging::unstage_all(&repo_path)
+async fn unstage_all(repo_path: String, app: AppHandle) -> Result<(), String> {
+    gitaxon::staging::unstage_all(&repo_path)
         .await
         .map_err(|e| e.to_string())?;
 
@@ -197,12 +209,14 @@ async fn unstage_all(repo_path: String) -> Result<(), String> {
         *cache = None;
     }
 
+    let _ = app.emit("git-state-changed", repo_path.clone());
+
     Ok(())
 }
 
 #[tauri::command]
-async fn stage_all(repo_path: String) -> Result<(), String> {
-    gitfast_core::staging::stage_all(&repo_path)
+async fn stage_all(repo_path: String, app: AppHandle) -> Result<(), String> {
+    gitaxon::staging::stage_all(&repo_path)
         .await
         .map_err(|e| e.to_string())?;
 
@@ -210,6 +224,8 @@ async fn stage_all(repo_path: String) -> Result<(), String> {
         let mut cache = STATUS_CACHE.lock().unwrap();
         *cache = None;
     }
+
+    let _ = app.emit("git-state-changed", repo_path.clone());
 
     Ok(())
 }
@@ -221,7 +237,7 @@ async fn create_commit(
     author_name: String,
     author_email: String,
 ) -> Result<String, String> {
-    let result = gitfast_core::staging::create_commit(&repo_path, &message, &author_name, &author_email)
+    let result = gitaxon::staging::create_commit(&repo_path, &message, &author_name, &author_email)
         .await
         .map_err(|e| e.to_string())?;
 
@@ -234,27 +250,78 @@ async fn create_commit(
 }
 
 #[tauri::command]
+async fn cherry_pick(
+    repo_path: String,
+    commit_hash: String,
+) -> Result<String, String> {
+    tokio::task::spawn_blocking(move || {
+        gitaxon::staging::cherry_pick(&repo_path, &commit_hash)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn revert_commit(
+    repo_path: String,
+    commit_hash: String,
+) -> Result<String, String> {
+    tokio::task::spawn_blocking(move || {
+        gitaxon::staging::revert_commit(&repo_path, &commit_hash)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn reset_to_commit(
+    repo_path: String,
+    commit_hash: String,
+    mode: String,
+) -> Result<String, String> {
+    tokio::task::spawn_blocking(move || {
+        gitaxon::staging::reset_to_commit(&repo_path, &commit_hash, &mode)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
 async fn get_diff_commit(
     repo_path: String,
     commit_hash: String,
 ) -> Result<String, String> {
-    gitfast_core::diff::diff_commit_json(&repo_path, &commit_hash)
+    gitaxon::diff::diff_commit_json(&repo_path, &commit_hash)
         .await
         .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 async fn get_diff_working_tree(repo_path: String) -> Result<String, String> {
-    gitfast_core::diff::diff_working_tree_json(&repo_path)
+    gitaxon::diff::diff_working_tree_json(&repo_path)
         .await
         .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 async fn get_diff_staged(repo_path: String) -> Result<String, String> {
-    gitfast_core::diff::diff_staged_json(&repo_path)
+    gitaxon::diff::diff_staged_json(&repo_path)
         .await
         .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn git_blame(
+    repo_path: String,
+    file_path: String,
+    commit_hash: Option<String>,
+) -> Result<String, String> {
+    tokio::task::spawn_blocking(move || {
+        let blame = gitaxon::diff::git_blame(&repo_path, &file_path, commit_hash.as_deref())?;
+        serde_json::to_string(&blame).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -263,7 +330,7 @@ async fn pull(
     remote_name: String,
     branch_name: String,
 ) -> Result<String, String> {
-    gitfast_core::remotes::pull(&repo_path, &remote_name, &branch_name)
+    gitaxon::remotes::pull(&repo_path, &remote_name, &branch_name)
         .await
         .map_err(|e| e.to_string())
 }
@@ -275,7 +342,7 @@ async fn push(
     branch_name: String,
     force: bool,
 ) -> Result<String, String> {
-    let result = gitfast_core::remotes::push(&repo_path, &remote_name, &branch_name, force)
+    let result = gitaxon::remotes::push(&repo_path, &remote_name, &branch_name, force)
         .await
         .map_err(|e| e.to_string())?;
     if result.success {
@@ -290,7 +357,7 @@ async fn fetch_remote(
     repo_path: String,
     remote_name: String,
 ) -> Result<String, String> {
-    let result = gitfast_core::remotes::fetch(&repo_path, &remote_name)
+    let result = gitaxon::remotes::fetch(&repo_path, &remote_name)
         .await
         .map_err(|e| e.to_string())?;
     serde_json::to_string(&result).map_err(|e| e.to_string())
@@ -310,7 +377,7 @@ async fn get_recent_repositories(limit: usize) -> Result<String, String> {
 
 #[tauri::command]
 async fn checkout_branch(repo_path: String, name: String) -> Result<(), String> {
-    gitfast_core::branches::checkout_branch(&repo_path, &name)
+    gitaxon::branches::checkout_branch(&repo_path, &name)
         .await
         .map_err(|e| e.to_string())?;
 
@@ -324,56 +391,116 @@ async fn checkout_branch(repo_path: String, name: String) -> Result<(), String> 
 
 #[tauri::command]
 async fn delete_branch(repo_path: String, name: String, force: bool) -> Result<(), String> {
-    gitfast_core::branches::delete_branch(&repo_path, &name, force)
+    gitaxon::branches::delete_branch(&repo_path, &name, force)
         .await
         .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 async fn rename_branch(repo_path: String, old_name: String, new_name: String) -> Result<(), String> {
-    gitfast_core::branches::rename_branch(&repo_path, &old_name, &new_name)
+    gitaxon::branches::rename_branch(&repo_path, &old_name, &new_name)
         .await
         .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 async fn create_branch(repo_path: String, name: String, from_ref: String) -> Result<(), String> {
-    gitfast_core::branches::create_branch(&repo_path, &name, &from_ref)
+    gitaxon::branches::create_branch(&repo_path, &name, &from_ref)
         .await
         .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 async fn merge_branch(repo_path: String, branch_name: String) -> Result<(), String> {
-    gitfast_core::branches::merge_branch(&repo_path, &branch_name)
+    gitaxon::branches::merge_branch(&repo_path, &branch_name)
         .await
         .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-async fn stash_push(repo_path: String, message: Option<String>) -> Result<(), String> {
-    gitfast_core::stash::stash_push(&repo_path, message.as_deref())
-        .await
-        .map_err(|e| e.to_string())
+async fn list_stashes(repo_path: String) -> Result<String, String> {
+    tokio::task::spawn_blocking(move || {
+        let entries = gitaxon::stash::list_stashes(&repo_path)?;
+        serde_json::to_string(&entries).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-async fn stash_pop(repo_path: String) -> Result<(), String> {
-    gitfast_core::stash::stash_pop(&repo_path)
-        .await
-        .map_err(|e| e.to_string())
+async fn stash_push(repo_path: String, message: String) -> Result<String, String> {
+    tokio::task::spawn_blocking(move || {
+        gitaxon::stash::stash_push(&repo_path, &message)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn stash_pop(repo_path: String, index: usize) -> Result<String, String> {
+    tokio::task::spawn_blocking(move || {
+        gitaxon::stash::stash_pop(&repo_path, index)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn stash_apply(repo_path: String, index: usize) -> Result<String, String> {
+    tokio::task::spawn_blocking(move || {
+        gitaxon::stash::stash_apply(&repo_path, index)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn stash_drop(repo_path: String, index: usize) -> Result<String, String> {
+    tokio::task::spawn_blocking(move || {
+        gitaxon::stash::stash_drop(&repo_path, index)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn stash_branch(
+    repo_path: String,
+    index: usize,
+    branch_name: String,
+) -> Result<String, String> {
+    tokio::task::spawn_blocking(move || {
+        gitaxon::stash::stash_branch(&repo_path, index, &branch_name)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
 async fn get_repo_identity(repo_path: String) -> Result<String, String> {
-    let identity = gitfast_core::identity::get_repo_identity(&repo_path)?;
+    let path = repo_path.clone();
+    let identity = tokio::task::spawn_blocking(move || {
+        gitaxon::identity::get_repo_identity(&path)
+    })
+    .await
+    .map_err(|e| e.to_string())??;
     serde_json::to_string(&identity).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 async fn get_ssh_profiles() -> Result<String, String> {
-    let profiles = gitfast_core::identity::get_ssh_profiles();
+    let profiles = gitaxon::identity::get_ssh_profiles();
     serde_json::to_string(&profiles).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn get_ssh_username(host_alias: String) -> Result<String, String> {
+    tokio::task::spawn_blocking(move || {
+        gitaxon::identity::get_github_username_cached(&host_alias)
+            .ok_or_else(|| "Could not get username".to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -383,7 +510,7 @@ async fn switch_repo_identity(
     name: String,
     email: String,
 ) -> Result<(), String> {
-    gitfast_core::identity::switch_repo_identity(
+    gitaxon::identity::switch_repo_identity(
         &repo_path,
         &ssh_host_alias,
         &name,
@@ -423,10 +550,10 @@ async fn discard_file(
             .status_file(std::path::Path::new(&file_path))
             .map_err(|e| e.to_string())?;
         if status.contains(git2::Status::WT_NEW) {
-            gitfast_core::staging::delete_untracked(&repo, &file_path)
+            gitaxon::staging::delete_untracked(&repo, &file_path)
                 .map_err(|e| e.to_string())
         } else {
-            gitfast_core::staging::discard_file(&repo, &file_path)
+            gitaxon::staging::discard_file(&repo, &file_path)
                 .map_err(|e| e.to_string())
         }
     })
@@ -443,7 +570,7 @@ async fn discard_file(
 async fn discard_all_changes(repo_path: String) -> Result<(), String> {
     let result = tokio::task::spawn_blocking(move || {
         let repo = git2::Repository::open(&repo_path).map_err(|e| e.to_string())?;
-        gitfast_core::staging::discard_all(&repo).map_err(|e| e.to_string())
+        gitaxon::staging::discard_all(&repo).map_err(|e| e.to_string())
     })
     .await
     .map_err(|e| e.to_string())?;
@@ -506,13 +633,14 @@ pub fn run() {
         })
         .on_window_event(|_window, event| {
             if let tauri::WindowEvent::Destroyed = event {
-                gitfast_core::watcher::stop_watching();
+                gitaxon::watcher::stop_watching();
             }
         })
         .invoke_handler(tauri::generate_handler![
             get_full_status,
             get_repo_identity,
             get_ssh_profiles,
+            get_ssh_username,
             switch_repo_identity,
             get_recent_repositories,
             get_commits,
@@ -529,15 +657,23 @@ pub fn run() {
             stage_all,
             unstage_all,
             create_commit,
+            cherry_pick,
+            revert_commit,
+            reset_to_commit,
             get_diff_commit,
             get_diff_working_tree,
             get_diff_staged,
+            git_blame,
             pull,
             push,
             fetch_remote,
             open_repository,
+            list_stashes,
             stash_push,
             stash_pop,
+            stash_apply,
+            stash_drop,
+            stash_branch,
             open_terminal_at,
             discard_file,
             discard_all_changes,

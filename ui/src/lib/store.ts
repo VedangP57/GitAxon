@@ -61,6 +61,7 @@ const diffFileStore = writable<DiffFile | null>(null);
 const diffModeStore = writable<DiffMode>('commit');
 const rightPanelModeStore = writable<RightPanelMode>('wip');
 const openCreateBranchFormStore = writable<boolean>(false);
+const createBranchFromHashStore = writable<string | null>(null);
 
 // Guards to prevent duplicate repo loads / watchers
 let loadRepoLock = false;
@@ -93,6 +94,7 @@ export const diffFile = { subscribe: diffFileStore.subscribe };
 export const diffMode = { subscribe: diffModeStore.subscribe };
 export const rightPanelMode = { subscribe: rightPanelModeStore.subscribe };
 export const openCreateBranchForm = { subscribe: openCreateBranchFormStore.subscribe, set: openCreateBranchFormStore.set };
+export const createBranchFromHash = { subscribe: createBranchFromHashStore.subscribe, set: createBranchFromHashStore.set };
 export const isRefreshing = { subscribe: isRefreshingStore.subscribe };
 
 export function showWip(): void {

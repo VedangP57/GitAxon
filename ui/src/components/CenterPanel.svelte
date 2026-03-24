@@ -2,11 +2,13 @@
 	import CommitGraph from './CommitGraph.svelte';
 	import DiffViewer from './DiffViewer.svelte';
 	import { centerView } from '$lib/store';
+
+	let { leftPanelOpen = true }: { leftPanelOpen?: boolean } = $props();
 </script>
 
 <div class="center-panel">
 	<div class="view-layer" class:active={$centerView === 'graph'}>
-		<CommitGraph />
+		<CommitGraph {leftPanelOpen} />
 	</div>
 	<div class="view-layer" class:active={$centerView === 'diff'}>
 		<DiffViewer />

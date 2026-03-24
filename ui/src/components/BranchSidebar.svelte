@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { branches, currentRepo, loadRepo, openCreateBranchForm } from '$lib/store';
+	import { branches, currentRepo, loadRepo, openCreateBranchForm, createBranchFromHash } from '$lib/store';
 	import {
 		deleteBranch,
 		renameBranch,
@@ -8,6 +8,7 @@
 	import { invoke } from '@tauri-apps/api/core';
 	import { showToast } from '$lib/toast';
 	import type { BranchInfo } from '$lib/types';
+	import StashManager from './StashManager.svelte';
 
 	let searchQuery = $state('');
 	let localOpen = $state(true);
@@ -65,6 +66,13 @@
 		if ($openCreateBranchForm) {
 			showCreateForm = true;
 			openCreateBranchForm.set(false);
+		}
+	});
+
+	$effect(() => {
+		if ($createBranchFromHash) {
+			openCreateForm($createBranchFromHash);
+			createBranchFromHash.set(null);
 		}
 	});
 
@@ -242,7 +250,7 @@
 								{:else}
 									<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="branch-icon"><line x1="6" y1="3" x2="6" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/></svg>
 								{/if}
-								<span class="branch-name">{branch.name}</span>
+								<span class="branch-name" title={branch.name}>{branch.name}</span>
 								<span class="branch-hash">{shortHash(branch.tipHash)}</span>
 								<button
 									class="checkout-btn"
@@ -279,7 +287,9 @@
 								tabindex="0"
 							>
 								<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="branch-icon"><line x1="6" y1="3" x2="6" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/></svg>
-								<span class="branch-name">{branch.name.replace(remoteName + '/', '')}</span>
+								<span class="branch-name" title={branch.name.replace(remoteName + '/', '')}
+									>{branch.name.replace(remoteName + '/', '')}</span
+								>
 								<span class="branch-hash">{shortHash(branch.tipHash)}</span>
 							</div>
 						{/each}
@@ -329,6 +339,8 @@
 				<div class="empty">No tags</div>
 			{/if}
 		</div>
+
+		<StashManager />
 
 	</div>
 

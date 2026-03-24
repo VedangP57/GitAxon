@@ -1,5 +1,5 @@
 //! Lane assignment algorithm for commit graph visualization.
-//! GitKraken-style "Straight Branches" algorithm from academic research.
+//! GitKraken-style straight-branch forbidden-column algorithm.
 
 use std::collections::{HashMap, HashSet};
 
@@ -45,239 +45,277 @@ pub struct LanedCommit {
     pub edges: Vec<Edge>,
 }
 
-/// Active slot: (commit_hash, color_index). None means free, never shift slots.
-type ActiveSlot = Option<(String, usize)>;
-
 pub fn assign_lanes(commits: Vec<CommitNode>) -> Vec<LanedCommit> {
-    if commits.is_empty() {
+    let n = commits.len();
+    if n == 0 {
         return vec![];
     }
 
-    let n = commits.len();
+    let commits = commits;
 
-    // Map hash -> index in commits array
-    let hash_to_idx: HashMap<String, usize> = commits
+    // Build SHA -> index lookup
+    let sha_to_idx: HashMap<String, usize> = commits
         .iter()
         .enumerate()
         .map(|(i, c)| (c.hash.clone(), i))
         .collect();
 
-    // Build children map: hash -> [child_hash, ...]
-    let mut children_map: HashMap<String, Vec<String>> = HashMap::new();
-    for c in &commits {
-        for parent in &c.parent_hashes {
-            children_map
-                .entry(parent.clone())
+    // Build children map: sha -> Vec<child_idx>
+    let mut children: HashMap<String, Vec<usize>> = HashMap::new();
+    for (i, commit) in commits.iter().enumerate() {
+        for parent_hash in &commit.parent_hashes {
+            children
+                .entry(parent_hash.clone())
                 .or_default()
-                .push(c.hash.clone());
+                .push(i);
         }
     }
 
-    // For each commit: branch_children = children where this IS their first parent
-    let branch_children: HashMap<String, Vec<String>> = commits
-        .iter()
-        .map(|c| {
-            let bc: Vec<String> = children_map
-                .get(&c.hash)
-                .unwrap_or(&vec![])
-                .iter()
-                .filter(|child_hash| {
-                    hash_to_idx
-                        .get(child_hash.as_str())
-                        .and_then(|&child_idx| {
-                            commits[child_idx].parent_hashes.first().map(|p| p == &c.hash)
-                        })
-                        .unwrap_or(false)
-                })
-                .cloned()
-                .collect();
-            (c.hash.clone(), bc)
-        })
-        .collect();
+    // B: active branch list indexed by column
+    // B[j] = Some(sha) means column j is occupied by that commit
+    // B[j] = None means column j is free (available for reuse)
+    let mut b: Vec<Option<String>> = Vec::new();
 
-    // merge_children = children where this is NOT their first parent
-    let merge_children: HashMap<String, Vec<String>> = commits
-        .iter()
-        .map(|c| {
-            let mc: Vec<String> = children_map
-                .get(&c.hash)
-                .unwrap_or(&vec![])
-                .iter()
-                .filter(|child_hash| {
-                    hash_to_idx
-                        .get(child_hash.as_str())
-                        .and_then(|&child_idx| {
-                            commits[child_idx].parent_hashes.first().map(|p| p != &c.hash)
-                        })
-                        .unwrap_or(false)
-                })
-                .cloned()
-                .collect();
-            (c.hash.clone(), mc)
-        })
-        .collect();
+    // col_intervals: column -> list of (start_row, end_row)
+    let mut col_intervals: HashMap<usize, Vec<(usize, usize)>> = HashMap::new();
 
-    // Active branches list — slots that are None can be reused, never shift
-    let mut active: Vec<ActiveSlot> = Vec::new();
-
-    // Track which column each commit hash is in
-    let mut hash_to_lane: HashMap<String, usize> = HashMap::new();
-
-    // Color counter
-    let mut color_counter: usize = 0;
-
-    // Track occupied column ranges for forbidden column computation
-    let mut col_last_used: Vec<i64> = Vec::new();
-
+    // Lane and color result per commit
     let mut lane_result: Vec<usize> = vec![0; n];
     let mut color_result: Vec<usize> = vec![0; n];
 
-    // Process commits from newest (index 0) to oldest. We need children's lanes when
-    // processing a parent, so input must be newest-first (enforced in get_commits).
+    // Process commits in row order (index 0 = newest = top)
     for i in 0..n {
-        let c = &commits[i];
-        let row = i;
+        let hash = commits[i].hash.clone();
+        let parent_hashes = commits[i].parent_hashes.clone();
 
-        // Compute forbidden columns: columns with active edges between
-        // this commit and its earliest merge child
-        let my_merge_children = merge_children
-            .get(&c.hash)
+        // Get children of this commit
+        let commit_children: Vec<usize> = children
+            .get(&hash)
             .cloned()
             .unwrap_or_default();
 
-        let forbidden: HashSet<usize> = if my_merge_children.is_empty() {
-            HashSet::new()
-        } else {
-            let earliest_merge_child_row = my_merge_children
-                .iter()
-                .filter_map(|h| hash_to_idx.get(h).copied())
-                .min()
-                .unwrap_or(row);
+        // Branch children: children for whom this commit is their FIRST parent
+        let branch_children: Vec<usize> = commit_children
+            .iter()
+            .filter(|&&ci| {
+                commits[ci]
+                    .parent_hashes
+                    .first()
+                    .map(|p| p == &hash)
+                    .unwrap_or(false)
+            })
+            .copied()
+            .collect();
 
-            col_last_used
-                .iter()
-                .enumerate()
-                .filter(|(_, &last)| last >= earliest_merge_child_row as i64)
-                .map(|(col, _)| col)
-                .collect()
-        };
+        // Compute forbidden columns
+        let forbidden = compute_forbidden(
+            i,
+            &hash,
+            &commits,
+            &commit_children,
+            &b,
+            &col_intervals,
+        );
 
-        let my_branch_children = branch_children
-            .get(&c.hash)
-            .cloned()
-            .unwrap_or_default();
+        // Sort branch children by their column (leftmost first)
+        let mut sorted_branch_children = branch_children.clone();
+        sorted_branch_children.sort_by_key(|&ci| lane_result[ci]);
 
-        // Find a branch child whose lane is not forbidden
-        let inherit_child = my_branch_children.iter().find_map(|h| {
-            hash_to_lane.get(h).copied().filter(|&col| !forbidden.contains(&col))
-        });
+        let mut chosen_col: Option<usize> = None;
+        let mut inherited_child: Option<usize> = None;
 
-        let my_lane: usize;
-        let my_color: usize;
-
-        if let Some(col) = inherit_child {
-            // Inherit lane from branch child (continue straight line)
-            my_lane = col;
-            my_color = active
-                .get(col)
-                .and_then(|s| s.as_ref())
-                .map(|(_, c)| *c)
-                .unwrap_or_else(|| {
-                    let c = color_counter % 8;
-                    color_counter += 1;
-                    c
-                });
-            if col < active.len() {
-                active[col] = Some((c.hash.clone(), my_color));
-            } else {
-                while active.len() <= col {
-                    active.push(None);
+        for &ci in &sorted_branch_children {
+            let child_col = lane_result[ci];
+            if !forbidden.contains(&child_col) {
+                if child_col < b.len() {
+                    b[child_col] = Some(hash.clone());
                 }
-                active[col] = Some((c.hash.clone(), my_color));
-            }
-        } else {
-            // Find a free slot not in forbidden
-            let free_slot = active
-                .iter()
-                .enumerate()
-                .find(|(col, slot)| slot.is_none() && !forbidden.contains(col))
-                .map(|(col, _)| col);
-
-            my_color = color_counter % 8;
-            color_counter += 1;
-
-            if let Some(col) = free_slot {
-                my_lane = col;
-                active[col] = Some((c.hash.clone(), my_color));
-            } else {
-                // Append new lane
-                my_lane = active.len();
-                active.push(Some((c.hash.clone(), my_color)));
-                col_last_used.push(-1);
+                chosen_col = Some(child_col);
+                inherited_child = Some(ci);
+                break;
             }
         }
 
-        lane_result[i] = my_lane;
-        color_result[i] = my_color;
-        hash_to_lane.insert(c.hash.clone(), my_lane);
-
-        // Update col_last_used for this lane
-        while col_last_used.len() <= my_lane {
-            col_last_used.push(-1);
-        }
-        col_last_used[my_lane] = row as i64;
-
-        // Free slots for branch children that we're not inheriting from
-        for child_hash in &my_branch_children {
-            if let Some(&child_col) = hash_to_lane.get(child_hash) {
-                if child_col != my_lane && child_col < active.len() {
-                    active[child_col] = None;
+        // If no column inherited, find first free slot not in forbidden
+        if chosen_col.is_none() {
+            let mut found = false;
+            for j in 0..b.len() {
+                if b[j].is_none() && !forbidden.contains(&j) {
+                    b[j] = Some(hash.clone());
+                    chosen_col = Some(j);
+                    found = true;
+                    break;
                 }
             }
+
+            if !found {
+                let new_col = b.len();
+                b.push(Some(hash.clone()));
+                chosen_col = Some(new_col);
+            }
+        }
+
+        let col = chosen_col.unwrap();
+        lane_result[i] = col;
+        color_result[i] = col % 8;
+
+        // Clear other branch children slots (columns freed, don't extend their intervals)
+        for &ci in &sorted_branch_children {
+            if Some(ci) != inherited_child {
+                let child_col = lane_result[ci];
+                if child_col < b.len() {
+                    b[child_col] = None;
+                }
+            }
+        }
+
+        // If this commit is a root (no parents), free its column and all lanes
+        // pointing to already-processed commits (converge at repo start)
+        if parent_hashes.is_empty() {
+            if col < b.len() {
+                b[col] = None;
+            }
+            let to_free: Vec<usize> = (0..b.len())
+                .filter(|&j| j != col)
+                .filter(|&j| {
+                    b[j].as_ref()
+                        .and_then(|occ| sha_to_idx.get(occ))
+                        .map(|&idx| idx <= i)
+                        .unwrap_or(false)
+                })
+                .collect();
+            for j in to_free {
+                b[j] = None;
+            }
+        }
+
+        // Update interval for this column: extend existing or add new
+        // Don't extend after column was freed (roots add final (i,i) only)
+        let intervals = col_intervals.entry(col).or_default();
+        if let Some(last) = intervals.last_mut() {
+            if last.1 == i.saturating_sub(1) {
+                last.1 = i;
+            } else {
+                intervals.push((i, i));
+            }
+        } else {
+            intervals.push((i, i));
         }
     }
 
-    // Build LanedCommit with edges
+    // Build LanedCommit with edges (parents have lanes assigned)
     let mut result = Vec::with_capacity(n);
-
     for i in 0..n {
-        let c = &commits[i];
-        let my_lane = lane_result[i];
-        let my_color = color_result[i];
-
-        let mut edges = Vec::new();
-
-        for (p_idx, parent_hash) in c.parent_hashes.iter().enumerate() {
-            if let Some(&parent_idx) = hash_to_idx.get(parent_hash) {
-                let parent_lane = lane_result[parent_idx];
-                let parent_color = color_result[parent_idx];
-
-                let edge_type = if p_idx == 0 && my_lane == parent_lane {
-                    EdgeType::Straight
-                } else if p_idx == 0 {
-                    EdgeType::Fork
-                } else {
-                    EdgeType::Merge
-                };
-
-                let color = if p_idx == 0 { my_color } else { parent_color };
-
-                edges.push(Edge {
-                    from_lane: my_lane,
-                    to_lane: parent_lane,
-                    color_index: color,
-                    edge_type,
-                });
-            }
-        }
-
+        let edges = generate_edges(i, &commits, &sha_to_idx, &lane_result, &color_result);
         result.push(LanedCommit {
-            commit: c.clone(),
-            lane: my_lane,
-            color_index: my_color,
+            commit: commits[i].clone(),
+            lane: lane_result[i],
+            color_index: color_result[i],
             edges,
         });
     }
 
     result
+}
+
+fn compute_forbidden(
+    row: usize,
+    hash: &str,
+    commits: &[CommitNode],
+    commit_children: &[usize],
+    b: &[Option<String>],
+    col_intervals: &HashMap<usize, Vec<(usize, usize)>>,
+) -> HashSet<usize> {
+    // Merge children: children for whom this commit is NOT the first parent
+    let merge_children: Vec<usize> = commit_children
+        .iter()
+        .filter(|&&ci| {
+            commits[ci]
+                .parent_hashes
+                .first()
+                .map(|p| p != hash)
+                .unwrap_or(true)
+        })
+        .copied()
+        .collect();
+
+    if merge_children.is_empty() {
+        return HashSet::new();
+    }
+
+    let i_min = *merge_children.iter().min().unwrap_or(&row);
+
+    let mut forbidden = HashSet::new();
+
+    for (j, occupant) in b.iter().enumerate() {
+        if occupant.is_some() {
+            if column_occupied_between(j, i_min, row, col_intervals) {
+                forbidden.insert(j);
+            }
+        }
+    }
+
+    forbidden
+}
+
+fn column_occupied_between(
+    col: usize,
+    row_start: usize,
+    row_end: usize,
+    col_intervals: &HashMap<usize, Vec<(usize, usize)>>,
+) -> bool {
+    if let Some(intervals) = col_intervals.get(&col) {
+        for &(a, b) in intervals {
+            if a <= row_end && b >= row_start {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn generate_edges(
+    row: usize,
+    commits: &[CommitNode],
+    sha_to_idx: &HashMap<String, usize>,
+    lane_result: &[usize],
+    color_result: &[usize],
+) -> Vec<Edge> {
+    let parent_hashes = &commits[row].parent_hashes;
+    let my_col = lane_result[row];
+    let my_color = color_result[row];
+
+    let mut edges = Vec::new();
+
+    for (pi, parent_hash) in parent_hashes.iter().enumerate() {
+        if let Some(&parent_idx) = sha_to_idx.get(parent_hash) {
+            let parent_col = lane_result[parent_idx];
+            let parent_color = color_result[parent_idx];
+
+            if pi == 0 {
+                // First parent: straight line or fork
+                let edge_type = if my_col == parent_col {
+                    EdgeType::Straight
+                } else {
+                    EdgeType::Fork
+                };
+                edges.push(Edge {
+                    from_lane: my_col,
+                    to_lane: parent_col,
+                    edge_type,
+                    color_index: my_color,
+                });
+            } else {
+                // Additional parents: merge edge
+                edges.push(Edge {
+                    from_lane: my_col,
+                    to_lane: parent_col,
+                    edge_type: EdgeType::Merge,
+                    color_index: parent_color,
+                });
+            }
+        }
+    }
+
+    edges
 }

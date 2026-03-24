@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { onMount, onDestroy } from "svelte";
+	import { get } from "svelte/store";
 	import { getCurrentWindow } from "@tauri-apps/api/window";
 	import CenterPanel from "./CenterPanel.svelte";
 	import RightPanel from "./RightPanel.svelte";
@@ -21,6 +22,7 @@
 		openTerminalAt,
 		getRepoIdentity,
 		getSshProfiles,
+		getSshUsername,
 		switchRepoIdentity,
 	} from "$lib/tauri";
 	import { showToast } from "$lib/toast";
@@ -61,10 +63,16 @@
 
 	let leftWidth = $state(stored("gax-left", 180));
 	let rightWidth = $state(stored("gax-right", 300));
+	let leftPanelOpen = $state(stored("gax-left-open", 1) === 1);
 	let resizing = $state<"left" | "right" | null>(null);
 
 	function startResize(which: "left" | "right") {
 		resizing = which;
+	}
+
+	function toggleLeftPanel() {
+		leftPanelOpen = !leftPanelOpen;
+		store("gax-left-open", leftPanelOpen ? 1 : 0);
 	}
 
 	function onMouseMove(e: MouseEvent) {
@@ -130,10 +138,11 @@
 	}
 
 	async function onStash() {
-		const repo = $currentRepo;
+		const repo = get(currentRepo);
 		if (!repo) return;
+		const msg = prompt("Stash message (optional):") ?? "";
 		try {
-			await stashPush(repo);
+			await stashPush(repo, msg);
 			await loadRepo(repo);
 			showToast("Changes stashed", "success");
 		} catch (e) {
@@ -145,7 +154,7 @@
 		const repo = $currentRepo;
 		if (!repo) return;
 		try {
-			await stashPop(repo);
+			await stashPop(repo, 0);
 			await loadRepo(repo);
 			showToast("Stash applied", "success");
 		} catch (e) {
@@ -200,6 +209,7 @@
 
 	let identity = $state<GitIdentity | null>(null);
 	let profiles = $state<SshProfile[]>([]);
+	let profileUsernames = $state<Record<string, string>>({});
 	let showAccountMenu = $state(false);
 	let showSwitchModal = $state(false);
 	let selectedProfile = $state<SshProfile | null>(null);
@@ -216,6 +226,19 @@
 		}
 	});
 
+	function loadProfileUsernames(profilesList: SshProfile[]) {
+		for (const profile of profilesList) {
+			getSshUsername(profile.host_alias)
+				.then((username) => {
+					profileUsernames = {
+						...profileUsernames,
+						[profile.host_alias]: username,
+					};
+				})
+				.catch(() => {});
+		}
+	}
+
 	$effect(() => {
 		const repo = $currentRepo;
 		if (repo) {
@@ -223,19 +246,21 @@
 				.then((id) => {
 					identity = id;
 				})
-				.catch((e) => {
+				.catch(() => {
 					identity = null;
 				});
 			getSshProfiles()
 				.then((p) => {
 					profiles = p;
+					loadProfileUsernames(p);
 				})
-				.catch((e) => {
+				.catch(() => {
 					profiles = [];
 				});
 		} else {
 			identity = null;
 			profiles = [];
+			profileUsernames = {};
 		}
 	});
 
@@ -329,6 +354,31 @@
 	<header class="toolbar">
 		<!-- Left -->
 		<div class="tb-left">
+			<button
+				class="tb-icon-btn"
+				onclick={toggleLeftPanel}
+				title={leftPanelOpen ? "Hide sidebar" : "Show sidebar"}
+				aria-label={leftPanelOpen ? "Hide sidebar" : "Show sidebar"}
+			>
+				<svg
+					width="16"
+					height="16"
+					viewBox="0 0 24 24"
+					fill="none"
+					stroke="currentColor"
+					stroke-width="2"
+					stroke-linecap="round"
+					stroke-linejoin="round"
+				>
+					{#if leftPanelOpen}
+						<rect x="3" y="4" width="18" height="16" rx="2"></rect>
+						<line x1="9" y1="4" x2="9" y2="20"></line>
+					{:else}
+						<rect x="3" y="4" width="18" height="16" rx="2"></rect>
+						<line x1="3" y1="4" x2="3" y2="20"></line>
+					{/if}
+				</svg>
+			</button>
 			<button class="tb-icon-btn" onclick={goHome} title="Back to Home">
 				<svg
 					width="16"
@@ -348,7 +398,7 @@
 			<span class="tb-repo-name">{repoName}</span>
 			{#if currentBranchName}
 				<span class="tb-sep">›</span>
-				<span class="tb-branch-name">{currentBranchName}</span>
+				<span class="tb-branch-name" title={currentBranchName}>{currentBranchName}</span>
 			{/if}
 			<button class="tb-icon-btn" onclick={onFetch} title="Fetch">
 				<svg
@@ -616,6 +666,8 @@
 						</div>
 
 						{#each profiles as profile}
+							{@const username = profileUsernames[profile.host_alias] ?? null}
+							{@const displayName = username ?? profile.label}
 							<!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
 							<div
 								class="account-profile-row"
@@ -634,11 +686,15 @@
 										? 'var(--accent-green)'
 										: 'var(--accent-blue)'}"
 								>
-									{profile.label[0].toUpperCase()}
+									{displayName[0]?.toUpperCase() ?? '?'}
 								</div>
 								<div class="profile-info">
-									<span class="profile-label">{profile.label}</span>
-									<span class="profile-host">{profile.host_alias}</span>
+									<span class="profile-label">{displayName}</span>
+									{#if username}
+										<span class="profile-host">@{username}</span>
+									{:else}
+										<span class="profile-host">{profile.host_alias}</span>
+									{/if}
 									<span class="profile-key">{profile.identity_file}</span>
 								</div>
 								{#if profile.host_alias === identity?.ssh_host}
@@ -657,25 +713,29 @@
 	<!-- ═══ MAIN BODY (flex row) ═══ -->
 	<div class="main-body">
 		<!-- ZONE 1: LEFT SIDEBAR -->
-		<aside class="left-panel" style="width: {leftWidth}px;">
-			<BranchSidebar />
-		</aside>
+		{#if leftPanelOpen}
+			<aside class="left-panel" style="width: {leftWidth}px;">
+				<BranchSidebar />
+			</aside>
+		{/if}
 
 		<!-- Left resize handle -->
-		<!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-		<div
-			class="resize-handle"
-			class:active={resizing === "left"}
-			role="separator"
-			aria-orientation="vertical"
-			onmousedown={() => startResize("left")}
-		>
-			<span class="resize-dots">⋮</span>
-		</div>
+		{#if leftPanelOpen}
+			<!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+			<div
+				class="resize-handle"
+				class:active={resizing === "left"}
+				role="separator"
+				aria-orientation="vertical"
+				onmousedown={() => startResize("left")}
+			>
+				<span class="resize-dots">⋮</span>
+			</div>
+		{/if}
 
 		<!-- ZONE 2: CENTER -->
 		<main class="center">
-			<CenterPanel />
+			<CenterPanel {leftPanelOpen} />
 		</main>
 
 		<!-- Right resize handle -->

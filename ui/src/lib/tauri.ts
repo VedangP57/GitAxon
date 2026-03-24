@@ -9,6 +9,27 @@ import type {
 	RepoRecord
 } from './types';
 
+export interface StashEntry {
+	index: number;
+	name: string;
+	message: string;
+	branch: string;
+	date: string;
+	hash: string;
+}
+
+export interface BlameLine {
+	line_no: number;
+	content: string;
+	commit_hash: string;
+	short_hash: string;
+	author: string;
+	author_email: string;
+	date: string;
+	timestamp: number;
+	summary: string;
+}
+
 /** Parse JSON result from Tauri command, throw on error */
 async function parseJson<T>(raw: unknown): Promise<T> {
 	const str = typeof raw === 'string' ? raw : String(raw);
@@ -81,6 +102,28 @@ export async function createCommit(
 	}) as Promise<string>;
 }
 
+export async function cherryPick(
+	repoPath: string,
+	commitHash: string
+): Promise<string> {
+	return invoke<string>('cherry_pick', { repoPath, commitHash });
+}
+
+export async function revertCommit(
+	repoPath: string,
+	commitHash: string
+): Promise<string> {
+	return invoke<string>('revert_commit', { repoPath, commitHash });
+}
+
+export async function resetToCommit(
+	repoPath: string,
+	commitHash: string,
+	mode: 'soft' | 'mixed' | 'hard'
+): Promise<string> {
+	return invoke<string>('reset_to_commit', { repoPath, commitHash, mode });
+}
+
 export async function getDiffCommit(
 	repoPath: string,
 	commitHash: string
@@ -102,6 +145,19 @@ export async function getDiffWorkingTree(
 export async function getDiffStaged(repoPath: string): Promise<DiffFile[]> {
 	const raw = await invoke('get_diff_staged', { repoPath });
 	return parseJson<DiffFile[]>(raw);
+}
+
+export async function gitBlame(
+	repoPath: string,
+	filePath: string,
+	commitHash?: string
+): Promise<BlameLine[]> {
+	const raw = await invoke<string>('git_blame', {
+		repoPath,
+		filePath,
+		commitHash: commitHash ?? null
+	});
+	return parseJson<BlameLine[]>(raw);
 }
 
 export async function pull(
@@ -177,12 +233,33 @@ export async function mergeBranch(repoPath: string, branchName: string): Promise
 	await invoke('merge_branch', { repoPath, branchName });
 }
 
-export async function stashPush(repoPath: string, message?: string): Promise<void> {
-	await invoke('stash_push', { repoPath, message: message ?? null });
+export async function listStashes(repoPath: string): Promise<StashEntry[]> {
+	const raw = await invoke<string>('list_stashes', { repoPath });
+	return JSON.parse(raw);
 }
 
-export async function stashPop(repoPath: string): Promise<void> {
-	await invoke('stash_pop', { repoPath });
+export async function stashPush(repoPath: string, message: string): Promise<string> {
+	return invoke<string>('stash_push', { repoPath, message });
+}
+
+export async function stashPop(repoPath: string, index: number): Promise<string> {
+	return invoke<string>('stash_pop', { repoPath, index });
+}
+
+export async function stashApply(repoPath: string, index: number): Promise<string> {
+	return invoke<string>('stash_apply', { repoPath, index });
+}
+
+export async function stashDrop(repoPath: string, index: number): Promise<string> {
+	return invoke<string>('stash_drop', { repoPath, index });
+}
+
+export async function stashBranch(
+	repoPath: string,
+	index: number,
+	branchName: string
+): Promise<string> {
+	return invoke<string>('stash_branch', { repoPath, index, branchName });
 }
 
 export async function openTerminalAt(repoPath: string): Promise<void> {
@@ -223,6 +300,10 @@ export async function getRepoIdentity(repoPath: string) {
 export async function getSshProfiles() {
 	const raw = await invoke<string>('get_ssh_profiles');
 	return JSON.parse(raw);
+}
+
+export async function getSshUsername(hostAlias: string): Promise<string> {
+	return invoke<string>('get_ssh_username', { hostAlias });
 }
 
 export async function switchRepoIdentity(
