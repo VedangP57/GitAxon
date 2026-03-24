@@ -4,15 +4,22 @@
 		diffMode,
 		isDiffLoading,
 		closeDiff,
-		currentRepo
+		currentRepo,
+		selectedCommit
 	} from '$lib/store';
-	import { discardFile } from '$lib/tauri';
+	import { discardFile, gitBlame, type BlameLine } from '$lib/tauri';
 	import { showToast } from '$lib/toast';
 	import type { DiffFile, DiffHunk } from '$lib/types';
 	import { get } from 'svelte/store';
 
 	let activeTab = $state<'diff' | 'file'>('diff');
 	let showDiscardConfirm = $state(false);
+	let blameMode = $state(false);
+	let blameData = $state<BlameLine[]>([]);
+	let blameLoading = $state(false);
+	let hoveredBlame = $state<BlameLine | null>(null);
+	let hoverPos = $state({ x: 0, y: 0 });
+	let blameFileId = $state<string | null>(null); // path used to detect file switches
 
 	function getFilePath(file: DiffFile): string {
 		return file.new_path ?? file.old_path ?? '';
@@ -20,6 +27,80 @@
 
 	function hunkHeader(hunk: DiffHunk): string {
 		return `@@ -${hunk.old_start},${hunk.old_lines} +${hunk.new_start},${hunk.new_lines} @@`;
+	}
+
+	function hashColor(hash: string): string {
+		const colors = [
+			'#58a6ff',
+			'#3fb950',
+			'#d2a352',
+			'#f85149',
+			'#bc8cff',
+			'#79c0ff',
+			'#ffa657',
+			'#8b949e'
+		];
+
+		let acc = 0;
+		for (let i = 0; i < hash.length; i += 1) {
+			acc = (acc * 31 + hash.charCodeAt(i)) >>> 0;
+		}
+		return colors[acc % colors.length];
+	}
+
+	// Reset blame when the displayed file changes or diff is closed
+	$effect(() => {
+		const file = $diffFile;
+		if (!file) {
+			blameMode = false;
+			blameData = [];
+			blameFileId = null;
+			hoveredBlame = null;
+			return;
+		}
+		if (!blameMode || !blameFileId) return;
+		const currentPath = file.new_path ?? file.old_path ?? '';
+		if (currentPath !== blameFileId) {
+			blameMode = false;
+			blameData = [];
+			blameFileId = null;
+			hoveredBlame = null;
+		}
+	});
+
+	async function toggleBlame() {
+		if (blameMode) {
+			blameMode = false;
+			blameData = [];
+			blameFileId = null;
+			hoveredBlame = null;
+			return;
+		}
+
+		const repo = get(currentRepo);
+		const file = get(diffFile);
+		if (!repo || !file) return;
+
+		const filePath = getFilePath(file);
+		if (!filePath) return;
+
+		const commitHash =
+			get(diffMode) === 'commit' ? get(selectedCommit)?.commit.hash : undefined;
+
+		blameLoading = true;
+		hoveredBlame = null;
+		try {
+			blameData = await gitBlame(repo, filePath, commitHash);
+			blameMode = true;
+			blameFileId = filePath;
+		} catch (e) {
+			blameData = [];
+			blameMode = false;
+			blameFileId = null;
+			showToast(`Blame failed: ${String(e)}`, 'error');
+		} finally {
+			blameLoading = false;
+		}
 	}
 
 	async function handleDiscardCurrentFile() {
@@ -64,7 +145,7 @@
 				<button class="toggle-btn" class:active={activeTab === 'diff'} onclick={() => (activeTab = 'diff')}>Diff View</button>
 			</div>
 			<div class="toggle-group">
-				<button class="toggle-btn">Blame</button>
+				<button class="toggle-btn bt-btn" class:active={blameMode} class:bt-active={blameMode} onclick={toggleBlame} title="Toggle blame view">Blame</button>
 				<button class="toggle-btn">History</button>
 			</div>
 			{#if $diffMode === 'working-tree' && $diffFile}
@@ -90,12 +171,51 @@
 	<div class="dv-content">
 		{#if $isDiffLoading}
 			<div class="dv-skeleton">
-				{#each Array(14) as _}
+				{#each Array(14) as _, i (i)}
 					<div class="sk-line"></div>
 				{/each}
 			</div>
 		{:else if !$diffFile}
 			<div class="dv-empty">No file selected</div>
+		{:else if blameMode}
+			<div class="blame-view">
+				{#if blameLoading}
+					<div class="blame-loading">Loading blame...</div>
+				{:else if blameData.length === 0}
+					<div class="dv-empty">No blame data available</div>
+				{:else}
+					<table class="blame-table">
+						<tbody>
+							{#each blameData as line (line.line_no + '-' + line.commit_hash)}
+								<tr
+									class="blame-row"
+									onmouseenter={() => (hoveredBlame = line)}
+									onmouseleave={() => (hoveredBlame = null)}
+									onmousemove={(event) => {
+										hoverPos = { x: event.clientX + 12, y: event.clientY + 14 };
+									}}
+								>
+									<td class="blame-hash">
+										<span class="bt-hash" style={`--bt-hash-color: ${hashColor(line.commit_hash)}`}>{line.short_hash}</span>
+									</td>
+									<td class="blame-author">{line.author}</td>
+									<td class="blame-date">{line.date}</td>
+									<td class="blame-lineno">{line.line_no}</td>
+									<td class="blame-content"><pre>{line.content}</pre></td>
+								</tr>
+							{/each}
+						</tbody>
+					</table>
+				{/if}
+				{#if hoveredBlame}
+					<div class="blame-tooltip" style={`left:${hoverPos.x}px; top:${hoverPos.y}px;`}>
+						<div><strong>{hoveredBlame.short_hash}</strong> {hoveredBlame.commit_hash}</div>
+						<div>{hoveredBlame.summary}</div>
+						<div>{hoveredBlame.author} &lt;{hoveredBlame.author_email}&gt;</div>
+						<div>{hoveredBlame.date}</div>
+					</div>
+				{/if}
+			</div>
 		{:else if $diffFile.hunks.length === 0}
 			<div class="dv-empty">No changes to display</div>
 		{:else}
@@ -116,7 +236,7 @@
 								<button class="revert-hunk-btn">Revert Hunk</button>
 							</td>
 						</tr>
-						{#each hunk.lines as line}
+						{#each hunk.lines as line, i (`${line.old_line_no ?? 'x'}-${line.new_line_no ?? 'x'}-${line.content}-${i}`)}
 							<tr
 								class="diff-line"
 								class:line-added={line.line_type === 'Added'}
@@ -220,6 +340,24 @@
 		border-radius: 4px;
 		overflow: hidden;
 	}
+	.bt-btn {
+		position: relative;
+	}
+	.bt-active {
+		background: var(--bg-tertiary);
+		color: var(--text-primary);
+	}
+	.bt-hash {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		min-width: 56px;
+		padding: 0 6px;
+		border-radius: 3px;
+		background: color-mix(in srgb, var(--bt-hash-color) 18%, transparent);
+		color: var(--bt-hash-color);
+		font-size: 11px;
+	}
 
 	.toggle-btn {
 		padding: 3px 10px;
@@ -295,6 +433,87 @@
 		font-family: 'JetBrains Mono', 'Fira Code', ui-monospace, monospace;
 		font-size: 12px;
 		line-height: 20px;
+	}
+	.blame-view {
+		position: relative;
+		height: 100%;
+	}
+	.blame-loading {
+		padding: 14px;
+		color: var(--text-secondary);
+		font-size: 12px;
+	}
+	.blame-table {
+		border-collapse: separate;
+		border-spacing: 0 2px;
+		width: 100%;
+		font-family: 'JetBrains Mono', 'Fira Code', ui-monospace, monospace;
+		font-size: 12px;
+		line-height: 20px;
+	}
+	.blame-row td {
+		background: transparent;
+	}
+	.blame-row:hover {
+		background: var(--bg-secondary);
+	}
+	.blame-hash {
+		width: 80px;
+		padding: 0 8px;
+		background: transparent;
+		border-right: 1px solid var(--bg-tertiary);
+		white-space: nowrap;
+	}
+	.blame-author {
+		width: 140px;
+		padding: 0 8px;
+		color: var(--text-secondary);
+		border-right: 1px solid var(--bg-tertiary);
+		white-space: nowrap;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		max-width: 140px;
+	}
+	.blame-date {
+		width: 110px;
+		padding: 0 8px;
+		color: var(--text-muted);
+		border-right: 1px solid var(--bg-tertiary);
+		white-space: nowrap;
+	}
+	.blame-lineno {
+		width: 52px;
+		padding: 0 8px;
+		text-align: right;
+		color: var(--text-muted);
+		border-right: 1px solid var(--bg-tertiary);
+		user-select: none;
+		white-space: nowrap;
+	}
+	.blame-content {
+		padding: 0 8px;
+		color: var(--text-primary);
+		white-space: pre;
+	}
+	.blame-content pre {
+		margin: 0;
+		white-space: pre;
+		font-family: inherit;
+		font-size: inherit;
+	}
+	.blame-tooltip {
+		position: fixed;
+		z-index: 40;
+		pointer-events: none;
+		max-width: 420px;
+		padding: 8px 10px;
+		border: 1px solid var(--border);
+		border-radius: 6px;
+		background: var(--bg-secondary);
+		color: var(--text-primary);
+		font-size: 11px;
+		line-height: 1.4;
+		box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
 	}
 
 	.col-old-no,

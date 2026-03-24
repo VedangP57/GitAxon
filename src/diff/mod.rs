@@ -1,7 +1,9 @@
 //! Diff module for comparing and displaying changes.
 
 use std::path::Path;
+use std::process::Command;
 
+use chrono::{TimeZone, Utc};
 use git2::{Delta, DiffFindOptions, Patch, Repository};
 use serde::{Deserialize, Serialize};
 
@@ -66,6 +68,20 @@ pub struct DiffFile {
     pub status: FileStatus,
     /// Hunks of changes.
     pub hunks: Vec<DiffHunk>,
+}
+
+/// Blame metadata for a single source line.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BlameLine {
+    pub line_no: usize,
+    pub content: String,
+    pub commit_hash: String,
+    pub short_hash: String,
+    pub author: String,
+    pub author_email: String,
+    pub date: String,
+    pub timestamp: i64,
+    pub summary: String,
 }
 
 fn delta_to_file_status(delta: Delta) -> Option<FileStatus> {
@@ -294,4 +310,97 @@ pub async fn diff_staged_json(repo_path: &str) -> GitfastResult<String> {
     let files = diff_staged(repo_path).await?;
     serde_json::to_string_pretty(&files)
         .map_err(|e| GitfastError::SerializationError(e.to_string()))
+}
+
+/// Returns git blame metadata for each line in a file.
+pub fn git_blame(
+    repo_path: &str,
+    file_path: &str,
+    commit_hash: Option<&str>,
+) -> Result<Vec<BlameLine>, String> {
+    let mut args = vec![
+        "blame".to_string(),
+        "--porcelain".to_string(),
+        "--".to_string(),
+        file_path.to_string(),
+    ];
+
+    if let Some(hash) = commit_hash {
+        args.insert(2, hash.to_string());
+    }
+
+    let output = Command::new("git")
+        .current_dir(repo_path)
+        .args(&args)
+        .output()
+        .map_err(|e| e.to_string())?;
+
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    parse_blame_porcelain(&stdout)
+}
+
+fn parse_blame_porcelain(output: &str) -> Result<Vec<BlameLine>, String> {
+    let mut lines = Vec::new();
+    let mut current_hash = String::new();
+    let mut current_author = String::new();
+    let mut current_email = String::new();
+    let mut current_timestamp: i64 = 0;
+    let mut current_summary = String::new();
+    let mut current_line_no: usize = 0;
+
+    for line in output.lines() {
+        if let Some(content) = line.strip_prefix('\t') {
+            let date = Utc
+                .timestamp_opt(current_timestamp, 0)
+                .single()
+                .map(|dt| dt.format("%Y-%m-%d").to_string())
+                .unwrap_or_else(|| "1970-01-01".to_string());
+
+            let short_hash = if current_hash.len() >= 7 {
+                current_hash[..7].to_string()
+            } else {
+                current_hash.clone()
+            };
+
+            lines.push(BlameLine {
+                line_no: current_line_no,
+                content: content.to_string(),
+                commit_hash: current_hash.clone(),
+                short_hash,
+                author: current_author.clone(),
+                author_email: current_email.clone(),
+                date,
+                timestamp: current_timestamp,
+                summary: current_summary.clone(),
+            });
+            continue;
+        }
+
+        if let Some((hash, rest)) = line.split_once(' ') {
+            if hash.len() == 40 && hash.chars().all(|c| c.is_ascii_hexdigit()) {
+                let mut parts = rest.split_whitespace();
+                let _orig_no = parts.next();
+                let final_no = parts.next();
+                current_hash = hash.to_string();
+                current_line_no = final_no.and_then(|n| n.parse().ok()).unwrap_or(0);
+                continue;
+            }
+        }
+
+        if let Some(rest) = line.strip_prefix("author ") {
+            current_author = rest.to_string();
+        } else if let Some(rest) = line.strip_prefix("author-mail ") {
+            current_email = rest.trim_matches(&['<', '>'][..]).to_string();
+        } else if let Some(rest) = line.strip_prefix("author-time ") {
+            current_timestamp = rest.parse().unwrap_or(0);
+        } else if let Some(rest) = line.strip_prefix("summary ") {
+            current_summary = rest.to_string();
+        }
+    }
+
+    Ok(lines)
 }

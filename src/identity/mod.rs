@@ -1,6 +1,55 @@
 //! Multi-account Git identity support.
 //! Reads ~/.ssh/config to discover SSH profiles and matches them to repo remotes.
 
+use std::collections::HashMap;
+use std::sync::{LazyLock, Mutex};
+
+static SSH_USERNAME_CACHE: LazyLock<Mutex<HashMap<String, String>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// Run `ssh -T git@{host}` and parse GitHub username from "Hi username!" response.
+pub fn get_github_username_for_host(host_alias: &str) -> Option<String> {
+    let output = std::process::Command::new("ssh")
+        .arg("-T")
+        .arg("-o")
+        .arg("StrictHostKeyChecking=no")
+        .arg("-o")
+        .arg("ConnectTimeout=5")
+        .arg(format!("git@{}", host_alias))
+        .output()
+        .ok()?;
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let response = format!("{}{}", stdout, stderr);
+
+    if let Some(start) = response.find("Hi ") {
+        let rest = &response[start + 3..];
+        if let Some(end) = rest.find('!') {
+            return Some(rest[..end].trim().to_string());
+        }
+    }
+    None
+}
+
+pub fn get_github_username_cached(host_alias: &str) -> Option<String> {
+    {
+        let cache = SSH_USERNAME_CACHE.lock().unwrap();
+        if let Some(username) = cache.get(host_alias) {
+            return Some(username.clone());
+        }
+    }
+
+    let username = get_github_username_for_host(host_alias)?;
+
+    {
+        let mut cache = SSH_USERNAME_CACHE.lock().unwrap();
+        cache.insert(host_alias.to_string(), username.clone());
+    }
+
+    Some(username)
+}
+
 #[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
 pub struct GitIdentity {
     pub name: String,
@@ -129,6 +178,19 @@ pub fn get_repo_identity(repo_path: &str) -> Result<GitIdentity, String> {
         .map(|p| p.label.clone())
         .unwrap_or_else(|| ssh_host.clone());
 
+    // Get GitHub username for this SSH host (cached)
+    let github_username = get_github_username_cached(&ssh_host);
+
+    let display_email = github_username
+        .as_ref()
+        .map(|u| format!("{}  (github.com)", u))
+        .unwrap_or_else(|| email.clone());
+
+    let display_name = github_username
+        .as_ref()
+        .map(|u| u.clone())
+        .unwrap_or_else(|| name.clone());
+
     let is_office_key = ssh_key.contains("id_ed25519") 
         && !ssh_key.contains("vedangp57");
     let is_personal_key = ssh_key.contains("vedangp57");
@@ -162,8 +224,8 @@ pub fn get_repo_identity(repo_path: &str) -> Result<GitIdentity, String> {
     };
 
     Ok(GitIdentity {
-        name,
-        email,
+        name: display_name,
+        email: display_email,
         ssh_host,
         ssh_key,
         account_label,

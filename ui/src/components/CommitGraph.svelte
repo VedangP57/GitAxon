@@ -1,844 +1,856 @@
 <script lang="ts">
-import { Application, Graphics, Container } from "pixi.js";
-import { Virtualizer, observeElementRect, observeElementOffset, elementScroll } from "@tanstack/virtual-core";
-	import {
-		commits,
-		branches,
-		status,
-		selectedCommit,
-		selectCommit,
-		loadMoreCommits,
-		isLoading,
-		rightPanelMode,
-		showWip,
-	} from "$lib/store";
-	import { onDestroy, onMount, untrack } from "svelte";
-	import type { BranchInfo, LanedCommit } from "$lib/types";
+/**
+ * @file CommitGraph.svelte
+ * @purpose GitKraken-style Canvas graph — fixed viewport canvas, redraws on scroll.
+ * @architecture Canvas API (not SVG, not Pixi). Canvas fixed to viewport height.
+ */
+import { untrack } from "svelte";
+import { get } from "svelte/store";
+import {
+	Virtualizer,
+	observeElementRect,
+	observeElementOffset,
+	elementScroll,
+} from "@tanstack/virtual-core";
+import {
+	commits,
+	branches,
+	status,
+	selectedCommit,
+	selectCommit,
+	loadMoreCommits,
+	isLoading,
+	rightPanelMode,
+	showWip,
+	loadRepo,
+	currentRepo,
+	createBranchFromHash,
+} from "$lib/store";
+import { onMount, onDestroy } from "svelte";
+import type { BranchInfo, LanedCommit } from "$lib/types";
+import { showToast } from "$lib/toast";
+import {
+	cherryPick,
+	revertCommit,
+	resetToCommit,
+	checkoutBranch,
+} from "$lib/tauri";
 
-	const MAX_CANVAS_PX = 16000;
-	const GRAPH_COL_WIDTH = 240;
+let { leftPanelOpen = true }: { leftPanelOpen?: boolean } = $props();
 
-	const ROW_HEIGHT = 36;
-	const LANE_SPACING = 24;
-	const LANE_OFFSET = 16;
-	const DOT_RADIUS = 4;
-	const LINE_WIDTH = 1.5;
-	const CANVAS_WIDTH = 240;
+// Layout constants (match GitKraken)
+const ROW_HEIGHT = 28;
+const BRANCH_COL_WIDTH = 240;
+const BRANCH_COL_WIDTH_EXPANDED = 360;
+const GRAPH_COL_WIDTH = 160;
+const LANE_WIDTH = 22;
+const LANE_OFFSET = 30;
+const DOT_RADIUS = 3.5;
+const LINE_WIDTH = 1.5;
 
-	const LANE_CSS_VARS = [
-		"--accent-blue",
-		"--accent-green",
-		"--accent-purple",
-		"--accent-orange",
-		"--accent-red",
-		"--accent-yellow",
-		"--accent-teal",
-		"--accent-pink",
-	];
+const LANE_CSS_VARS = [
+	"--accent-blue",
+	"--accent-green",
+	"--accent-purple",
+	"--accent-orange",
+	"--accent-red",
+	"--accent-yellow",
+	"--accent-teal",
+	"--accent-pink",
+];
+const LANE_FALLBACKS = [
+	"#58a6ff",
+	"#3fb950",
+	"#bc8cff",
+	"#f0883e",
+	"#f85149",
+	"#d29922",
+	"#39d353",
+	"#ff7b72",
+];
 
-	const LANE_FALLBACKS = [
-		0x58a6ff, 0x3fb950, 0xbc8cff, 0xf0883e, 0xf85149, 0xd29922, 0x39d353,
-		0xff7b72,
-	];
+let laneColorCache: string[] = [];
 
-	function buildLaneColors(): number[] {
-		return LANE_CSS_VARS.map((v, i) => {
-			const raw = getComputedStyle(document.documentElement)
-				.getPropertyValue(v)
-				.trim();
+function initLaneColors() {
+	laneColorCache = [0, 1, 2, 3, 4, 5, 6, 7].map(getLaneColor);
+}
 
-			if (!raw || raw === "") return LANE_FALLBACKS[i];
+function getLaneColor(colorIndex: number): string {
+	const idx = colorIndex % 8;
+	const raw = getComputedStyle(document.documentElement)
+		.getPropertyValue(LANE_CSS_VARS[idx])
+		.trim();
+	if (raw && raw !== "" && raw !== "#ffffff") return raw;
+	return LANE_FALLBACKS[idx];
+}
 
-			if (raw.startsWith("#")) {
-				const n = parseInt(raw.slice(1), 16);
-				// If white or invalid, use fallback
-				if (isNaN(n) || n === 0xffffff || n === 0) {
-					return LANE_FALLBACKS[i];
-				}
-				return n;
-			}
+function laneX(lane: number): number {
+	return LANE_OFFSET + lane * LANE_WIDTH;
+}
 
-			// Handle rgb() format
-			const m = raw.match(/rgb\((\d+),\s*(\d+),\s*(\d+)\)/);
-			if (m) {
-				const r = parseInt(m[1]);
-				const g = parseInt(m[2]);
-				const b = parseInt(m[3]);
-				const n = (r << 16) | (g << 8) | b;
-				if (n === 0xffffff || n === 0) return LANE_FALLBACKS[i];
-				return n;
-			}
+function formatRelativeTime(timestamp: number): string {
+	const sec = Math.floor((Date.now() - timestamp * 1000) / 1000);
+	if (sec < 60) return "just now";
+	if (sec < 3600) return `${Math.floor(sec / 60)} min ago`;
+	if (sec < 86400) return `${Math.floor(sec / 3600)} hours ago`;
+	if (sec < 2592000) return `${Math.floor(sec / 86400)} days ago`;
+	if (sec < 31536000) return `${Math.floor(sec / 2592000)} months ago`;
+	return `${Math.floor(sec / 31536000)} years ago`;
+}
 
-			return LANE_FALLBACKS[i];
-		});
-	}
+function formatTooltipDate(timestamp: number): string {
+	const d = new Date(timestamp * 1000);
+	const date = d.toLocaleDateString(undefined, {
+		month: "long",
+		day: "numeric",
+		year: "numeric",
+	});
+	const time = d.toLocaleTimeString(undefined, {
+		hour: "numeric",
+		minute: "2-digit",
+		hour12: true,
+	});
+	return `${date} at ${time}`;
+}
 
-	let LANE_COLORS = [...LANE_FALLBACKS];
-	const LANE_COLORS_CSS = [
-		"#8b949e",
-		"#3fb950",
-		"#d29922",
-		"#bc8cff",
-		"#f85149",
-		"#39d353",
-		"#ff7b72",
-		"#adbac7",
-	];
+function getDeduplicatedLabels(lc: LanedCommit): BranchInfo[] {
+	const labels = branchByHash.get(lc.commit.hash) ?? [];
 
-	function getLaneX(lane: number): number {
-		return Math.min(LANE_OFFSET + lane * LANE_SPACING, CANVAS_WIDTH - 10);
-	}
-
-	function formatRelativeTime(timestamp: number): string {
-		const sec = Math.floor((Date.now() - timestamp * 1000) / 1000);
-		if (sec < 60) return "just now";
-		if (sec < 3600) return `${Math.floor(sec / 60)} min ago`;
-		if (sec < 86400) return `${Math.floor(sec / 3600)} hours ago`;
-		if (sec < 2592000) return `${Math.floor(sec / 86400)} days ago`;
-		if (sec < 31536000) return `${Math.floor(sec / 2592000)} months ago`;
-		return `${Math.floor(sec / 31536000)} years ago`;
-	}
-
-	function formatTooltipDate(timestamp: number): string {
-		const d = new Date(timestamp * 1000);
-		const date = d.toLocaleDateString(undefined, {
-			month: "long",
-			day: "numeric",
-			year: "numeric",
-		});
-		const time = d.toLocaleTimeString(undefined, {
-			hour: "numeric",
-			minute: "2-digit",
-			hour12: true,
-		});
-		return `${date} at ${time}`;
-	}
-
-	let containerRef = $state<HTMLDivElement | null>(null);
-	let canvasContainer = $state<HTMLDivElement | null>(null);
-	let app: Application | null = null;
-	let canvasHostRef: HTMLElement | null = null; // container we appended the Pixi canvas to
-	let isInitializing = false;
-	let isInitialized = $state(false);
-	let pixiFailed = $state(false);
-	let fallbackCanvas = $state<HTMLCanvasElement | null>(null);
-	let virtualizer = $state<Virtualizer<
-		HTMLDivElement,
-		HTMLDivElement
-	> | null>(null);
-	let virtualizerVersion = $state(0);
-	let tooltipCommit = $state<LanedCommit | null>(null);
-
-	let tooltipPos = $state({ x: 0, y: 0 });
-	let searchQuery = $state("");
-	let lastDrawnRef: LanedCommit[] = [];
-	let scrollThrottled = false;
-
-	const totalChanges = $derived($status.length);
-
-	// StatusEntry: staged (bool), status ("M"|"A"|"D"|"WM"|"WD"|"?")
-	const unstagedCount = $derived(
-		$status.filter((f) => !f.staged).length,
-	);
-	const stagedCount = $derived(
-		$status.filter((f) => f.staged).length,
+	const branchInfo = labels as (BranchInfo & { isTag?: boolean })[];
+	const localNames = new Set(
+		branchInfo
+			.filter((l) => !l.isRemote && !l.isTag)
+			.map((l) => l.name),
 	);
 
-	const commitList = $derived.by(() => {
-		const all = $commits;
-		const q = searchQuery.trim().toLowerCase();
-		if (!q) return all;
-		return all.filter(
-			(lc) =>
-				lc.commit.message.toLowerCase().includes(q) ||
-				lc.commit.author_name.toLowerCase().includes(q) ||
-				lc.commit.hash.toLowerCase().includes(q) ||
-				lc.commit.short_hash.toLowerCase().includes(q),
+	const deduplicated = branchInfo.filter((l) => {
+		if (!l.isRemote) return true;
+		if (l.isTag) return true;
+		const baseName = l.name.split("/").slice(1).join("/");
+		return !localNames.has(baseName);
+	});
+
+	return [...deduplicated].sort((a, b) => {
+		if (a.isHead) return -1;
+		if (b.isHead) return 1;
+		if (!a.isRemote && !a.isTag) return -1;
+		if (!b.isRemote && !b.isTag) return 1;
+		if (a.isTag && !b.isTag) return 1;
+		if (!a.isTag && b.isTag) return -1;
+		return 0;
+	});
+}
+
+function visibleLabels(lc: LanedCommit): BranchInfo[] {
+	return getDeduplicatedLabels(lc).slice(0, 2);
+}
+
+function overflowCount(lc: LanedCommit): number {
+	return Math.max(0, getDeduplicatedLabels(lc).length - 2);
+}
+
+function hiddenLabels(lc: LanedCommit): BranchInfo[] {
+	return getDeduplicatedLabels(lc).slice(2);
+}
+
+// Canvas refs
+let containerRef = $state<HTMLDivElement | null>(null);
+let canvasEl = $state<HTMLCanvasElement | null>(null);
+let ctx = $state<CanvasRenderingContext2D | null>(null);
+let graphScrollWrapRef = $state<HTMLDivElement | null>(null);
+
+let virtualizer = $state<Virtualizer<HTMLDivElement, HTMLDivElement> | null>(
+	null,
+);
+let virtualizerVersion = $state(0);
+let tooltipCommit = $state<LanedCommit | null>(null);
+let tooltipPos = $state({ x: 0, y: 0 });
+let searchQuery = $state("");
+let scrollThrottled = false;
+let delayedLoading = $state(false);
+let loadingTimer: ReturnType<typeof setTimeout> | null = null;
+let branchClickTimer: ReturnType<typeof setTimeout> | null = null;
+let ctxMenu = $state<{
+	x: number;
+	y: number;
+	commit: LanedCommit;
+} | null>(null);
+
+const totalChanges = $derived($status.length);
+const branchColWidth = $derived(
+	leftPanelOpen ? BRANCH_COL_WIDTH : BRANCH_COL_WIDTH_EXPANDED,
+);
+
+const commitList = $derived.by(() => {
+	const all = $commits;
+	const q = searchQuery.trim().toLowerCase();
+	if (!q) return all;
+	return all.filter(
+		(lc) =>
+			lc.commit.message.toLowerCase().includes(q) ||
+			lc.commit.author_name.toLowerCase().includes(q) ||
+			lc.commit.hash.toLowerCase().includes(q) ||
+			lc.commit.short_hash.toLowerCase().includes(q),
+	);
+});
+const branchList = $derived($branches);
+const selected = $derived($selectedCommit);
+
+const rowCount = $derived(commitList.length + 1);
+const totalHeight = $derived(rowCount * ROW_HEIGHT);
+
+const branchByHash = $derived.by(() => {
+	const map = new Map<string, BranchInfo[]>();
+	for (const b of branchList) {
+		const existing = map.get(b.tipHash) ?? [];
+		existing.push(b);
+		map.set(b.tipHash, existing);
+	}
+	return map;
+});
+
+const branchColorMap = $derived.by(() => {
+	const map = new Map<string, string>();
+	for (const lc of commitList) {
+		const color = getLaneColor(lc.color_index);
+		const labels = branchByHash.get(lc.commit.hash) ?? [];
+		for (const label of labels) {
+			map.set(label.name, color);
+		}
+	}
+	return map;
+});
+
+const laneFirstCommitIdx = $derived.by(() => {
+	const map = new Map<number, number>();
+	for (let i = 0; i < commitList.length; i++) {
+		const lc = commitList[i];
+		if (!map.has(lc.lane)) {
+			map.set(lc.lane, i);
+		}
+	}
+	return map;
+});
+
+const laneLastCommitIdx = $derived.by(() => {
+	const map = new Map<number, number>();
+	for (let i = commitList.length - 1; i >= 0; i--) {
+		const lc = commitList[i];
+		if (!map.has(lc.lane)) {
+			map.set(lc.lane, i);
+		}
+	}
+	return map;
+});
+
+const laneStates = $derived.by(() => {
+	const states: Map<number, number>[] = [];
+	const laneFirstSeen = new Map<number, number>();
+	for (let i = 0; i < commitList.length; i++) {
+		const lc = commitList[i];
+		if (!laneFirstSeen.has(lc.lane)) {
+			laneFirstSeen.set(lc.lane, i);
+		}
+	}
+
+	const active = new Map<number, number>();
+
+	for (let i = 0; i < commitList.length; i++) {
+		const lc = commitList[i];
+		active.set(lc.lane, lc.color_index);
+
+		for (const edge of lc.edges) {
+			if (edge.edge_type === "Straight") {
+				active.set(edge.to_lane, edge.color_index);
+			}
+			if (edge.edge_type === "Fork") {
+				active.set(edge.to_lane, edge.color_index);
+			}
+			if (edge.edge_type === "Merge") {
+				// to_lane (incoming branch) stays active until we reach its commit
+				active.set(edge.to_lane, edge.color_index);
+				active.set(edge.from_lane, lc.color_index);
+			}
+		}
+
+		// Lane ends if this commit has no Straight/Fork edge from its lane
+		const hasDownwardEdge = lc.edges.some(
+			(e) =>
+				(e.edge_type === "Straight" || e.edge_type === "Fork") &&
+				e.from_lane === lc.lane,
 		);
-	});
-	const branchList = $derived($branches);
-	const selected = $derived($selectedCommit);
-	const totalHeight = $derived(
-		Math.max(1, commitList.length + 1) * ROW_HEIGHT,
-	);
-
-	// Memoized branch lookup: hash -> BranchInfo[]
-	const branchByHash = $derived.by(() => {
-		const map = new Map<string, BranchInfo[]>();
-		for (const b of branchList) {
-			const existing = map.get(b.tipHash) ?? [];
-			existing.push(b);
-			map.set(b.tipHash, existing);
+		if (!hasDownwardEdge && lc.edges.length > 0) {
+			active.delete(lc.lane);
 		}
-		return map;
-	});
+		if (lc.edges.length === 0) {
+			active.delete(lc.lane);
+		}
 
-	// Pre-compute lane state for every row — battle-tested algorithm
-	const laneStates = $derived.by(() => {
-		const commits = commitList;
-		const states: Map<number, number>[] = [];
-		const active = new Map<number, number>(); // lane -> colorIndex
-
-		for (let i = 0; i < commits.length; i++) {
-			const lc = commits[i];
-
-			// Ensure current commit lane is active with its color
-			active.set(lc.lane, lc.color_index);
-
-			// Snapshot current state for this row
-			states.push(new Map(active));
-
-			// Update active lanes based on edges
-			for (const edge of lc.edges) {
-				if (edge.edge_type === "Straight") {
-					active.set(edge.to_lane, edge.color_index);
-				} else if (edge.edge_type === "Fork") {
-					active.set(edge.to_lane, edge.color_index);
-				} else if (edge.edge_type === "Merge") {
-					// Merged branch ends here
-					active.delete(edge.to_lane);
-					// Main lane continues
-					active.set(edge.from_lane, lc.color_index);
-				}
-			}
-
-			// Remove lanes with no outgoing edges (branch tips)
-			if (lc.edges.length === 0) {
-				active.delete(lc.lane);
+		const snapshot = new Map<number, number>();
+		for (const [lane, colorIdx] of active) {
+			const firstSeen = laneFirstSeen.get(lane) ?? i;
+			if (firstSeen <= i) {
+				snapshot.set(lane, colorIdx);
 			}
 		}
-		return states;
-	});
+		states.push(snapshot);
+	}
+	return states;
+});
 
-	// Lane remapping: compress gaps so [0, 3, 7] -> [0, 1, 2] for compact visual
-	const laneRemap = $derived.by(() => {
-		const states = laneStates;
-		const allLanes = new Set<number>();
-		for (const s of states) {
-			for (const [lane] of s) allLanes.add(lane);
-		}
-		// Also include lanes from commits (for dots)
-		for (const lc of commitList) {
-			allLanes.add(lc.lane);
-		}
-		const sorted = [...allLanes].sort((a, b) => a - b);
-		const remap = new Map<number, number>();
-		sorted.forEach((lane, idx) => remap.set(lane, idx));
-		return remap;
-	});
+// Precompute row pixel positions: commit i is at ROW_HEIGHT + i*ROW_HEIGHT
+const rowPixelPositions = $derived.by(() => {
+	const positions: number[] = [];
+	for (let i = 0; i < commitList.length; i++) {
+		positions.push(ROW_HEIGHT + i * ROW_HEIGHT);
+	}
+	return positions;
+});
 
-	$effect(() => {
-		const el = containerRef;
-		const list = commitList;
-		if (!el) return;
+function resizeCanvas() {
+	if (!canvasEl || !containerRef) return;
+	const dpr = window.devicePixelRatio || 1;
+	const wrap = graphScrollWrapRef ?? containerRef.parentElement;
+	if (!wrap) return;
 
-		let v = virtualizer;
-		if (!v) {
-			v = new Virtualizer({
-				count: list.length,
-				getScrollElement: () => containerRef,
-				estimateSize: () => ROW_HEIGHT,
-				scrollToFn: (offset, opts, instance) => {
-					elementScroll(offset, opts, instance);
-				},
-				observeElementRect,
-				observeElementOffset,
-				overscan: 10,
-				onChange: () => {
-					// Defer to break effect loop: onChange -> virtualizerVersion++ -> re-render -> ResizeObserver -> measure -> onChange
-					queueMicrotask(() => {
-						virtualizerVersion++;
-					});
-				},
-			});
-			virtualizer = v;
-			v._willUpdate();
-		} else {
-			v.setOptions({
-				count: list.length,
-				getScrollElement: () => containerRef,
-				estimateSize: () => ROW_HEIGHT,
-				scrollToFn: (offset, opts, instance) => {
-					elementScroll(offset, opts, instance);
-				},
-				observeElementRect,
-				observeElementOffset,
-				overscan: 10,
-				onChange: () => {
-					// Defer to break effect loop: onChange -> virtualizerVersion++ -> re-render -> ResizeObserver -> measure -> onChange
-					queueMicrotask(() => {
-						virtualizerVersion++;
-					});
-				},
-			});
-			v._willUpdate();
-		}
-	});
+	const logicalW = GRAPH_COL_WIDTH;
+	const logicalH = wrap.clientHeight;
 
-	$effect(() => {
-		const v = virtualizer;
-		const el = containerRef;
-		if (!v || !el) return;
-		// Defer measurement until layout is ready (next frame)
-		const id = requestAnimationFrame(() => {
-			if (el.clientHeight > 0) {
-				v.measure();
-			}
-		});
-		return () => cancelAnimationFrame(id);
-	});
+	canvasEl.width = logicalW * dpr;
+	canvasEl.height = logicalH * dpr;
+	canvasEl.style.width = logicalW + "px";
+	canvasEl.style.height = logicalH + "px";
 
-	$effect(() => {
-		const el = containerRef;
-		if (!el) return;
-		const ro = new ResizeObserver(() => virtualizer?.measure());
-		ro.observe(el);
-		return () => ro.disconnect();
-	});
+	const c = canvasEl.getContext("2d");
+	if (c) {
+		ctx = c;
+		c.scale(dpr, dpr);
+	}
+}
 
-	function ensureCanvasInContainer(container: HTMLElement) {
-		if (!app) return;
-		const canvas = app.canvas;
-		// Re-attach if container was recreated (e.g. after loadRepo tore down DOM)
-		const needsReattach =
-			canvasHostRef !== container ||
-			!document.contains(canvas);
-		if (needsReattach) {
-			canvasHostRef = container;
-			container.appendChild(canvas);
-			queueMicrotask(() => onScroll());
-		}
+function drawWipDot(scrollTop: number) {
+	if (!ctx || !canvasEl) return;
+	const logicalH = canvasEl.height / (window.devicePixelRatio || 1);
+	const wipY = ROW_HEIGHT / 2 - scrollTop;
+	if (wipY < -ROW_HEIGHT || wipY > logicalH + ROW_HEIGHT) return;
+
+	const x = laneX(0);
+	ctx.beginPath();
+	ctx.setLineDash([3, 2]);
+	ctx.arc(x, wipY, DOT_RADIUS + 1, 0, Math.PI * 2);
+	ctx.strokeStyle =
+		getComputedStyle(document.documentElement)
+			.getPropertyValue("--text-secondary")
+			.trim() || "#8b949e";
+	ctx.lineWidth = 1.5;
+	ctx.stroke();
+	ctx.setLineDash([]);
+}
+
+function drawCommitRow(
+	i: number,
+	rowY: number,
+	states: Map<number, number>[],
+	firstIdx: Map<number, number>,
+	lastIdx: Map<number, number>,
+) {
+	const lc = commitList[i];
+	if (!lc || !ctx) return;
+
+	const activeLanes = states[i] ?? new Map();
+	const cy = rowY + ROW_HEIGHT / 2;
+	const bgColor =
+		getComputedStyle(document.documentElement)
+			.getPropertyValue("--bg-primary")
+			.trim() || "#0d1117";
+
+	// 1. Vertical lane lines — first commit: cy to bottom, last: top to cy
+	for (const [lane, colorIdx] of activeLanes) {
+		const x = laneX(lane);
+		const color = laneColorCache[colorIdx % 8] ?? getLaneColor(colorIdx);
+
+		const first = firstIdx.get(lane) ?? 0;
+		const last = lastIdx.get(lane) ?? 0;
+
+		// Don't draw this lane if we're past its last commit
+		if (i > last) continue;
+
+		const isFirst = i === first;
+		const isLast = i === last;
+
+		const y1 = isFirst ? cy : rowY;
+		const y2 = isLast ? cy : rowY + ROW_HEIGHT;
+
+		if (y1 >= y2) continue;
+
+		ctx.beginPath();
+		ctx.moveTo(x, y1);
+		ctx.lineTo(x, y2);
+		ctx.strokeStyle = color;
+		ctx.lineWidth = LINE_WIDTH;
+		ctx.lineCap = "round";
+		ctx.stroke();
 	}
 
-	async function initPixi(container: HTMLElement) {
-		// Already initialized: ensure canvas is in the current container (handles DOM recreation)
-		if (isInitialized && app) {
-			ensureCanvasInContainer(container);
+	// Root commit (last in lane, no edges): lane was removed from active, but we must
+	// draw the tail from row top to dot so the line connects from above
+	const lastForLane = lastIdx.get(lc.lane) ?? 0;
+	if (i === lastForLane && !activeLanes.has(lc.lane) && lc.edges.length === 0) {
+		const x = laneX(lc.lane);
+		const color =
+			laneColorCache[lc.color_index % 8] ?? getLaneColor(lc.color_index);
+		ctx.beginPath();
+		ctx.moveTo(x, rowY);
+		ctx.lineTo(x, cy);
+		ctx.strokeStyle = color;
+		ctx.lineWidth = LINE_WIDTH;
+		ctx.lineCap = "round";
+		ctx.stroke();
+	}
+
+	// 2. Bezier curves — smooth arc, no horizontal overshoot
+	for (const edge of lc.edges) {
+		if (edge.from_lane === edge.to_lane) continue;
+		const type = edge.edge_type;
+		if (type === "Straight") continue;
+
+		const x1 = laneX(edge.from_lane);
+		const x2 = laneX(edge.to_lane);
+		const y1 = cy;
+		const y2 = rowY + ROW_HEIGHT;
+
+		const color =
+			laneColorCache[edge.color_index % 8] ?? getLaneColor(edge.color_index);
+
+		ctx.beginPath();
+		ctx.strokeStyle = color;
+		ctx.lineWidth = LINE_WIDTH;
+		ctx.lineCap = "round";
+
+		if (type === "Merge" || type === "Fork") {
+			// Line goes straight down for 85% of row, turns only at bottom
+			const cp1x = x1;
+			const cp1y = y1 + (y2 - y1) * 0.85;
+			const cp2x = x2;
+			const cp2y = y2;
+			ctx.moveTo(x1, y1);
+			ctx.bezierCurveTo(cp1x, cp1y, cp2x, cp2y, x2, y2);
+		}
+		ctx.stroke();
+	}
+
+	// 3. Commit dot
+	const dotX = laneX(lc.lane);
+	const dotColor =
+		laneColorCache[lc.color_index % 8] ?? getLaneColor(lc.color_index);
+	const isMerge = (lc.commit.parent_hashes?.length ?? 0) > 1;
+	const dotR = isMerge ? DOT_RADIUS + 1 : DOT_RADIUS;
+
+	ctx.beginPath();
+	ctx.arc(dotX, cy, dotR + 0.5, 0, Math.PI * 2);
+	ctx.fillStyle = bgColor;
+	ctx.fill();
+
+	ctx.beginPath();
+	ctx.arc(dotX, cy, dotR, 0, Math.PI * 2);
+	ctx.fillStyle = dotColor;
+	ctx.fill();
+}
+
+function drawVisibleGraph() {
+	if (!ctx || !canvasEl || commitList.length === 0) return;
+
+	const scrollTop = containerRef?.scrollTop ?? 0;
+	const dpr = window.devicePixelRatio || 1;
+	const logicalW = canvasEl.width / dpr;
+	const logicalH = canvasEl.height / dpr;
+
+	// Commit i row top = ROW_HEIGHT + i*ROW_HEIGHT. Overscan 2 rows.
+	const firstVisible = Math.max(
+		0,
+		Math.floor((scrollTop - 2 * ROW_HEIGHT) / ROW_HEIGHT),
+	);
+	const lastVisible = Math.min(
+		commitList.length - 1,
+		Math.ceil((scrollTop + logicalH + 2 * ROW_HEIGHT) / ROW_HEIGHT) - 1,
+	);
+
+	ctx.clearRect(0, 0, logicalW, logicalH);
+
+	drawWipDot(scrollTop);
+
+	const positions = rowPixelPositions;
+	const states = laneStates;
+	const firstIdx = laneFirstCommitIdx;
+
+	for (let i = firstVisible; i <= lastVisible; i++) {
+		const absY = positions[i];
+		if (absY === undefined) continue;
+
+		const rowY = absY - scrollTop;
+
+		if (rowY < -ROW_HEIGHT || rowY > logicalH + ROW_HEIGHT) continue;
+
+		drawCommitRow(i, rowY, states, firstIdx, laneLastCommitIdx);
+	}
+}
+
+function onScroll() {
+	drawVisibleGraph();
+	checkInfiniteScroll();
+}
+
+function checkInfiniteScroll() {
+	if (scrollThrottled) return;
+	scrollThrottled = true;
+	setTimeout(() => {
+		scrollThrottled = false;
+		const el = containerRef;
+		if (!el) return;
+		const { scrollTop, scrollHeight, clientHeight } = el;
+		if (scrollHeight - scrollTop - clientHeight < 800) {
+			loadMoreCommits();
+		}
+	}, 150);
+}
+
+function handleCanvasClick(e: MouseEvent) {
+	if (!canvasEl || !containerRef) return;
+	const rect = canvasEl.getBoundingClientRect();
+	const mouseX = e.clientX - rect.left;
+	const mouseY = e.clientY - rect.top;
+	const scrollTop = containerRef.scrollTop;
+
+	const absoluteY = mouseY + scrollTop;
+	const positions = rowPixelPositions;
+
+	for (let i = 0; i < commitList.length; i++) {
+		const lc = commitList[i];
+		const dotX = laneX(lc.lane);
+		const dotY = positions[i] + ROW_HEIGHT / 2;
+		const dotR = DOT_RADIUS + 4;
+
+		const dist = Math.sqrt(
+			(mouseX - dotX) ** 2 + (absoluteY - dotY) ** 2,
+		);
+
+		if (dist <= dotR) {
+			selectCommit(lc);
 			return;
 		}
-		if (isInitializing) return;
-		isInitializing = true;
+	}
+}
 
-		try {
-			const pixiApp = new Application();
-			const list = commitList;
-			const totalHeight = list.length * ROW_HEIGHT;
-			const canvasHeight = Math.min(
-				Math.max(600, totalHeight),
-				MAX_CANVAS_PX,
-			);
+function handleGraphWheel(e: WheelEvent) {
+	const el = containerRef;
+	if (!el) return;
+	e.preventDefault();
+	el.scrollTop += e.deltaY;
+}
 
-			await pixiApp.init({
-				width: GRAPH_COL_WIDTH,
-				height: canvasHeight,
-				backgroundAlpha: 0,
-				antialias: true,
-				preference: "webgl",
-				resolution: window.devicePixelRatio || 1,
-				autoDensity: true,
-			});
+function handleWipClick() {
+	showWip();
+}
 
-			container.appendChild(pixiApp.canvas);
-			canvasHostRef = container;
-			pixiApp.canvas.style.position = "absolute";
-			pixiApp.canvas.style.top = "0";
-			pixiApp.canvas.style.left = "0";
-
-			pixiApp.ticker.maxFPS = 60;
-			pixiApp.ticker.start();
-
-			app = pixiApp;
-			isInitialized = true;
-			isInitializing = false;
-
-			console.log("[Pixi] Init complete");
-
-			if (list.length > 0) {
-				drawGraph(list);
-			}
-		} catch (err) {
-			console.warn("[Pixi] WebGL failed, trying canvas:", err);
-			isInitializing = true;
-			try {
-				const pixiApp = new Application();
-				const list = commitList;
-				const totalHeight = list.length * ROW_HEIGHT;
-				const canvasHeight = Math.min(
-					Math.max(600, totalHeight),
-					MAX_CANVAS_PX,
-				);
-
-				await pixiApp.init({
-					width: GRAPH_COL_WIDTH,
-					height: canvasHeight,
-					backgroundAlpha: 0,
-					preference: "canvas",
-					resolution: 1,
-				});
-
-				container.appendChild(pixiApp.canvas);
-				canvasHostRef = container;
-				pixiApp.canvas.style.position = "absolute";
-				pixiApp.canvas.style.top = "0";
-				pixiApp.canvas.style.left = "0";
-
-				pixiApp.ticker.maxFPS = 60;
-				pixiApp.ticker.start();
-
-				app = pixiApp;
-				isInitialized = true;
-				if (list.length > 0) {
-					drawGraph(list);
-				}
-				console.log("[Pixi] Init complete (canvas fallback)");
-			} catch (err2) {
-				console.error("[Pixi] Canvas also failed:", err2);
-				pixiFailed = true;
-			} finally {
-				isInitializing = false;
-			}
+async function handleCherryPick(lc: LanedCommit) {
+	ctxMenu = null;
+	try {
+		const repo = get(currentRepo);
+		if (!repo) {
+			showToast("No repository open", "error");
+			return;
 		}
+		const msg = await cherryPick(repo, lc.commit.hash);
+		await loadRepo(repo);
+		showToast(msg, "success");
+	} catch (e) {
+		showToast(String(e), "error");
+	}
+}
+
+async function handleRevert(lc: LanedCommit) {
+	ctxMenu = null;
+	try {
+		const repo = get(currentRepo);
+		if (!repo) {
+			showToast("No repository open", "error");
+			return;
+		}
+		const msg = await revertCommit(repo, lc.commit.hash);
+		await loadRepo(repo);
+		showToast(msg, "success");
+	} catch (e) {
+		showToast(String(e), "error");
+	}
+}
+
+async function handleReset(lc: LanedCommit, mode: "soft" | "mixed" | "hard") {
+	ctxMenu = null;
+	if (mode === "hard") {
+		if (!confirm(`Hard reset to ${lc.commit.short_hash}? This cannot be undone.`)) return;
+	}
+	try {
+		const repo = get(currentRepo);
+		if (!repo) {
+			showToast("No repository open", "error");
+			return;
+		}
+		const msg = await resetToCommit(repo, lc.commit.hash, mode);
+		await loadRepo(repo);
+		showToast(msg, "success");
+	} catch (e) {
+		showToast(String(e), "error");
+	}
+}
+
+async function handleCreateBranchHere(lc: LanedCommit) {
+	ctxMenu = null;
+	createBranchFromHash.set(lc.commit.hash);
+}
+
+async function handleCopyHash(lc: LanedCommit) {
+	ctxMenu = null;
+	await navigator.clipboard.writeText(lc.commit.hash);
+	showToast("Copied commit hash", "info");
+}
+
+async function handleCopyMessage(lc: LanedCommit) {
+	ctxMenu = null;
+	await navigator.clipboard.writeText(lc.commit.message);
+	showToast("Copied commit message", "info");
+}
+
+async function handleBranchDoubleClick(label: BranchInfo) {
+	const repo = get(currentRepo);
+	if (!repo) {
+		showToast("No repository open", "error");
+		return;
+	}
+	if (label.isTag) {
+		showToast("Cannot checkout a tag from branch labels", "info");
+		return;
+	}
+	if (label.isRemote) {
+		showToast("Cannot checkout a remote branch directly", "info");
+		return;
+	}
+	if (label.isHead) {
+		showToast(`Already on ${label.name}`, "info");
+		return;
 	}
 
-	// Reactive Pixi init: run when container and commits are both available
-	$effect(() => {
-		const container = canvasContainer;
-		const list = commitList;
-		if (!container || list.length === 0) return;
-		initPixi(container);
-	});
-
-	// Draw ONCE when commits change or when Pixi becomes ready. NEVER on scroll.
-	// Read isInitialized first so effect re-runs when Pixi finishes init
-	$effect(() => {
-		const ready = isInitialized;
-		const pixiApp = app;
-		if (!ready || !pixiApp) return;
-
-		const current = commitList;
-		if (current === lastDrawnRef) return;
-		lastDrawnRef = current;
-
-		untrack(() => {
-			const newHeight = Math.min(
-				Math.max(600, current.length * ROW_HEIGHT),
-				MAX_CANVAS_PX,
+	try {
+		await checkoutBranch(repo, label.name);
+		await loadRepo(repo);
+		showToast(`Switched to branch ${label.name}`, "success");
+	} catch (err) {
+		const msg = err instanceof Error ? err.message : String(err);
+		if (msg.toLowerCase().includes("uncommitted changes")) {
+			showToast(
+				"Cannot checkout: you have uncommitted changes. Stage or stash them first.",
+				"error",
 			);
-			if (pixiApp.renderer.height !== newHeight) {
-				pixiApp.renderer.resize(GRAPH_COL_WIDTH, newHeight);
-			}
-			drawGraph(current);
+			return;
+		}
+		showToast(msg, "error");
+	}
+}
+
+function handleBranchPillClick(e: MouseEvent, lc: LanedCommit, label: BranchInfo) {
+	e.stopPropagation();
+
+	// Use timed click handling so single-click selection doesn't cancel
+	// branch checkout behavior on the second click.
+	if (branchClickTimer) {
+		clearTimeout(branchClickTimer);
+		branchClickTimer = null;
+		void handleBranchDoubleClick(label);
+		return;
+	}
+
+	branchClickTimer = setTimeout(() => {
+		branchClickTimer = null;
+		selectCommit(lc);
+	}, 220);
+}
+
+let resizeObserver: ResizeObserver | null = null;
+
+onMount(() => {
+	initLaneColors();
+	if (canvasEl) {
+		ctx = canvasEl.getContext("2d");
+		resizeCanvas();
+		drawVisibleGraph();
+		canvasEl.addEventListener("click", handleCanvasClick);
+	}
+
+	const onKeyDown = (e: KeyboardEvent) => {
+		if (e.key === "Escape") ctxMenu = null;
+	};
+	window.addEventListener("keydown", onKeyDown);
+	return () => {
+		window.removeEventListener("keydown", onKeyDown);
+	};
+});
+
+$effect(() => {
+	const wrap = graphScrollWrapRef;
+	if (!wrap) return;
+	resizeObserver?.disconnect();
+	resizeObserver = new ResizeObserver(() => {
+		resizeCanvas();
+		drawVisibleGraph();
+	});
+	resizeObserver.observe(wrap);
+	return () => resizeObserver?.disconnect();
+});
+
+$effect(() => {
+	const wrap = graphScrollWrapRef;
+	const scrollEl = containerRef;
+	if (!wrap || !scrollEl) return;
+	const onWheel = (e: WheelEvent) => {
+		e.preventDefault();
+		scrollEl.scrollTop += e.deltaY;
+	};
+	wrap.addEventListener("wheel", onWheel, { passive: false });
+	return () => wrap.removeEventListener("wheel", onWheel);
+});
+
+onDestroy(() => {
+	resizeObserver?.disconnect();
+	canvasEl?.removeEventListener("click", handleCanvasClick);
+	if (loadingTimer) clearTimeout(loadingTimer);
+	if (branchClickTimer) clearTimeout(branchClickTimer);
+});
+
+$effect(() => {
+	const loading = $isLoading;
+	if (loading) {
+		if (loadingTimer) clearTimeout(loadingTimer);
+		loadingTimer = setTimeout(() => {
+			delayedLoading = true;
+		}, 220);
+		return;
+	}
+
+	if (loadingTimer) {
+		clearTimeout(loadingTimer);
+		loadingTimer = null;
+	}
+	delayedLoading = false;
+});
+
+$effect(() => {
+	const _ = commitList;
+	untrack(() => {
+		if (ctx && canvasEl) {
+			initLaneColors();
+			resizeCanvas();
+			drawVisibleGraph();
+		}
+	});
+});
+
+$effect(() => {
+	const el = containerRef;
+	if (!el) return;
+	el.addEventListener("scroll", onScroll, { passive: true });
+	return () => el.removeEventListener("scroll", onScroll);
+});
+
+$effect(() => {
+	const c = canvasEl;
+	if (!c) return;
+	ctx = c.getContext("2d");
+	if (ctx) {
+		resizeCanvas();
+		drawVisibleGraph();
+	}
+});
+
+$effect(() => {
+	const el = containerRef;
+	const list = commitList;
+	if (!el) return;
+
+	const count = list.length + 1;
+	let v = virtualizer;
+	if (!v) {
+		v = new Virtualizer({
+			count,
+			getScrollElement: () => containerRef,
+			estimateSize: () => ROW_HEIGHT,
+			scrollToFn: (offset, opts, instance) => {
+				elementScroll(offset, opts, instance);
+			},
+			observeElementRect,
+			observeElementOffset,
+			overscan: 10,
+			onChange: () => {
+				queueMicrotask(() => virtualizerVersion++);
+			},
 		});
-	});
-
-	function drawFallbackGraph(canvas: HTMLCanvasElement, list: LanedCommit[]) {
-		const ctx = canvas.getContext("2d");
-		if (!ctx) return;
-
-		const colors = LANE_COLORS;
-		const toHex = (n: number) =>
-			"#" + (n & 0xffffff).toString(16).padStart(6, "0");
-
-		const h = (list.length + 1) * ROW_HEIGHT;
-		canvas.width = GRAPH_COL_WIDTH;
-		canvas.height = h;
-		ctx.clearRect(0, 0, canvas.width, canvas.height);
-
-		// WIP row
-		const wipY = ROW_HEIGHT / 2;
-		const wipX = LANE_OFFSET;
-		const radius = 6;
-		const dashCount = 8;
-		for (let i = 0; i < dashCount; i++) {
-			const startAngle = (i / dashCount) * Math.PI * 2;
-			const endAngle = ((i + 0.6) / dashCount) * Math.PI * 2;
-			ctx.beginPath();
-			ctx.arc(wipX, wipY, radius, startAngle, endAngle);
-			ctx.strokeStyle = "#e6edf3";
-			ctx.lineWidth = 1.5;
-			ctx.stroke();
-		}
-		ctx.beginPath();
-		ctx.arc(wipX, wipY, 2, 0, Math.PI * 2);
-		ctx.fillStyle = "#e6edf3";
-		ctx.fill();
-
-		ctx.beginPath();
-		ctx.moveTo(LANE_OFFSET, wipY);
-		ctx.lineTo(LANE_OFFSET, ROW_HEIGHT);
-		ctx.strokeStyle = toHex(colors[0]);
-		ctx.lineWidth = LINE_WIDTH;
-		ctx.stroke();
-
-		// Lane states
-		const laneStates: Map<number, number>[] = [];
-		const active = new Map<number, number>();
-		for (let i = 0; i < list.length; i++) {
-			const lc = list[i];
-			active.set(lc.lane, lc.color_index);
-			laneStates.push(new Map(active));
-			for (const edge of lc.edges) {
-				if (
-					edge.edge_type === "Straight" ||
-					edge.edge_type === "Fork"
-				) {
-					active.set(edge.to_lane, edge.color_index);
-				} else if (edge.edge_type === "Merge") {
-					active.delete(edge.to_lane);
-					active.set(edge.from_lane, lc.color_index);
-				}
-			}
-			if (lc.edges.length === 0) active.delete(lc.lane);
-		}
-
-		// Vertical lines by color
-		const pathsByColor = new Map<number, Path2D>();
-		for (let i = 0; i < list.length; i++) {
-			const rowIndex = i + 1;
-			for (const [lane, colorIdx] of laneStates[i]) {
-				const x = LANE_OFFSET + lane * LANE_SPACING;
-				if (!pathsByColor.has(colorIdx)) {
-					pathsByColor.set(colorIdx, new Path2D());
-				}
-				const p = pathsByColor.get(colorIdx)!;
-				p.moveTo(x, rowIndex * ROW_HEIGHT);
-				p.lineTo(x, (rowIndex + 1) * ROW_HEIGHT);
-			}
-		}
-
-		// Bezier curves
-		for (let i = 0; i < list.length; i++) {
-			const rowIndex = i + 1;
-			for (const edge of list[i].edges) {
-				if (edge.edge_type !== "Straight") {
-					const fromX =
-						LANE_OFFSET + edge.from_lane * LANE_SPACING;
-					const toX = LANE_OFFSET + edge.to_lane * LANE_SPACING;
-					const fromY =
-						rowIndex * ROW_HEIGHT + ROW_HEIGHT / 2;
-					const toY =
-						(rowIndex + 1) * ROW_HEIGHT + ROW_HEIGHT / 2;
-					if (!pathsByColor.has(edge.color_index)) {
-						pathsByColor.set(edge.color_index, new Path2D());
-					}
-					const p = pathsByColor.get(edge.color_index)!;
-					p.moveTo(fromX, fromY);
-					p.bezierCurveTo(
-						fromX,
-						fromY + ROW_HEIGHT * 0.6,
-						toX,
-						toY - ROW_HEIGHT * 0.6,
-						toX,
-						toY,
-					);
-				}
-			}
-		}
-
-		for (const [colorIdx, p] of pathsByColor) {
-			ctx.strokeStyle = toHex(colors[colorIdx % colors.length]);
-			ctx.lineWidth = LINE_WIDTH;
-			ctx.stroke(p);
-		}
-
-		// Dots
-		for (let i = 0; i < list.length; i++) {
-			const lc = list[i];
-			const rowIndex = i + 1;
-			const x = LANE_OFFSET + lc.lane * LANE_SPACING;
-			const y = rowIndex * ROW_HEIGHT + ROW_HEIGHT / 2;
-			const color = toHex(colors[lc.color_index % colors.length]);
-
-			ctx.beginPath();
-			ctx.arc(x, y, DOT_RADIUS + 1.5, 0, Math.PI * 2);
-			ctx.fillStyle = "#ffffff";
-			ctx.fill();
-
-			ctx.beginPath();
-			ctx.arc(x, y, DOT_RADIUS, 0, Math.PI * 2);
-			ctx.fillStyle = color;
-			ctx.fill();
-		}
+		virtualizer = v;
+		v._willUpdate();
+	} else {
+		v.setOptions({
+			count,
+			getScrollElement: () => containerRef,
+			estimateSize: () => ROW_HEIGHT,
+			scrollToFn: (offset, opts, instance) => {
+				elementScroll(offset, opts, instance);
+			},
+			observeElementRect,
+			observeElementOffset,
+			overscan: 10,
+			onChange: () => {
+				queueMicrotask(() => virtualizerVersion++);
+			},
+		});
+		v._willUpdate();
 	}
+});
 
-	function getLineG(
-		linesByColor: Map<number, Graphics>,
-		linesContainer: Container,
-		colorIdx: number,
-	): Graphics {
-		const idx = colorIdx % 8;
-		if (!linesByColor.has(idx)) {
-			const g = new Graphics();
-			linesByColor.set(idx, g);
-			linesContainer.addChild(g);
-		}
-		return linesByColor.get(idx)!;
-	}
-
-	function drawGraph(list: LanedCommit[]) {
-		if (!app) return;
-
-		app.ticker.stop();
-
-		// ── Clear stage ──
-		app.stage.removeChildren();
-		const linesContainer = new Container();
-		const dotsContainer = new Container();
-		app.stage.addChild(linesContainer);
-		app.stage.addChild(dotsContainer);
-
-		// ── Resize canvas ──
-		const hasWip = totalChanges > 0;
-		const wipRows = hasWip ? 1 : 0;
-		const totalRows = list.length + wipRows;
-		const totalH = Math.max(totalRows * ROW_HEIGHT, 600);
-		if (app.renderer.height !== totalH) {
-			app.renderer.resize(GRAPH_COL_WIDTH, totalH);
-		}
-
-		// ── One Graphics per color for line batching ──
-		const linesByColor = new Map<number, Graphics>();
-		function getLineG(colorIdx: number): Graphics {
-			const key = colorIdx % 8;
-			if (!linesByColor.has(key)) {
-				const g = new Graphics();
-				linesByColor.set(key, g);
-				linesContainer.addChild(g);
-			}
-			return linesByColor.get(key)!;
-		}
-
-		// ── Build hash→index for edge target lookup ──
-		const hashToIdx = new Map<string, number>();
-		list.forEach((lc, i) => hashToIdx.set(lc.commit.hash, i));
-
-		// ── Track active lanes (lane → colorIndex) ──
-		// Active = has a vertical line passing through this row
-		const active = new Map<number, number>();
-
-		for (let i = 0; i < list.length; i++) {
-			const lc = list[i];
-			const row = i + wipRows; // row 0 reserved for WIP if shown
-			const yTop = row * ROW_HEIGHT;
-			const yMid = yTop + ROW_HEIGHT / 2;
-			const yBot = yTop + ROW_HEIGHT;
-
-			// This commit's lane is definitely active this row
-			active.set(lc.lane, lc.color_index);
-
-			// ── Draw vertical segments for ALL active lanes ──
-			for (const [lane, colorIdx] of active) {
-				const x = LANE_OFFSET + lane * LANE_SPACING;
-				const g = getLineG(colorIdx);
-				g.moveTo(x, yTop);
-				g.lineTo(x, yBot);
-			}
-
-			// ── Draw merge/fork bezier curves ──
-			for (const edge of lc.edges) {
-				if (edge.edge_type === "Straight") continue;
-
-				const fromX = LANE_OFFSET + edge.from_lane * LANE_SPACING;
-				const toX = LANE_OFFSET + edge.to_lane * LANE_SPACING;
-				if (fromX === toX) continue; // same position, skip
-
-				const g = getLineG(edge.color_index);
-				g.moveTo(fromX, yMid);
-				g.bezierCurveTo(
-					fromX,
-					yMid + ROW_HEIGHT * 0.6,
-					toX,
-					yBot + ROW_HEIGHT * 0.4,
-					toX,
-					yBot + ROW_HEIGHT / 2,
-				);
-			}
-
-			// ── Update active lanes for NEXT row ──
-			const firstParentHash = lc.commit.parent_hashes[0];
-			if (!firstParentHash || !hashToIdx.has(firstParentHash)) {
-				// Root commit or parent outside loaded range
-				// Lane ends here — remove from active
-				active.delete(lc.lane);
-			}
-			// else: first parent continues same lane, stays in active
-
-			// Merge source lanes: become active from here downward
-			for (const edge of lc.edges) {
-				if (edge.edge_type !== "Straight") {
-					active.set(edge.to_lane, edge.color_index);
-				}
-			}
-		}
-
-		// ── Stroke all line batches ──
-		for (const [colorIdx, g] of linesByColor) {
-			g.stroke({
-				width: LINE_WIDTH,
-				color: LANE_COLORS[colorIdx % LANE_COLORS.length],
-				alpha: 1.0,
-			});
-		}
-
-		// ── WIP dashed dot ──
-		if (hasWip) {
-			const x = LANE_OFFSET;
-			const y = ROW_HEIGHT / 2;
-			const wipDot = new Graphics();
-			for (let seg = 0; seg < 8; seg++) {
-				const a1 = (seg / 8) * Math.PI * 2;
-				const a2 = ((seg + 0.55) / 8) * Math.PI * 2;
-				wipDot.arc(x, y, DOT_RADIUS + 1, a1, a2);
-			}
-			wipDot.stroke({ width: 1.5, color: 0xe6edf3, alpha: 0.6 });
-			wipDot.circle(x, y, 2);
-			wipDot.fill({ color: 0xe6edf3, alpha: 0.6 });
-			dotsContainer.addChild(wipDot);
-			// Vertical line from WIP down to first commit lane 0
-			if (list.length > 0) {
-				const g = getLineG(list[0].color_index);
-				g.moveTo(LANE_OFFSET, y);
-				g.lineTo(LANE_OFFSET, ROW_HEIGHT);
-			}
-		}
-
-		// ── Commit dots (drawn on top) ──
-		for (let i = 0; i < list.length; i++) {
-			const lc = list[i];
-			const row = i + wipRows;
-			const x = LANE_OFFSET + lc.lane * LANE_SPACING;
-			const y = row * ROW_HEIGHT + ROW_HEIGHT / 2;
-			const color = LANE_COLORS[lc.color_index % LANE_COLORS.length];
-
-			const dot = new Graphics();
-
-			// Subtle outer ring
-			dot.circle(x, y, DOT_RADIUS + 2);
-			dot.fill({ color: 0xffffff, alpha: 0.08 });
-
-			// Main dot
-			dot.circle(x, y, DOT_RADIUS);
-			dot.fill({ color });
-
-			dot.eventMode = "static";
-			dot.cursor = "pointer";
-			const captured = lc;
-			dot.on("pointerover", () => {
-				dot.scale.set(1.4);
-				app!.renderer.render(app!.stage);
-			});
-			dot.on("pointerout", () => {
-				dot.scale.set(1.0);
-				app!.renderer.render(app!.stage);
-			});
-			dot.on("pointertap", () => selectCommit(captured));
-
-			dotsContainer.addChild(dot);
-		}
-
-		app.renderer.render(app.stage);
-		app.ticker.start();
-        
-        // Sync scroll position so graph lines up with list
-        queueMicrotask(() => onScroll());
-
-		const maxLane = list.reduce((m, c) => Math.max(m, c.lane), 0);
-		console.log(`[GitFast] Graph: ${list.length} commits, ${maxLane + 1} lanes`);
-	}
-
-	// Scroll: GPU stage.y transform only. Zero CPU. No render(), no drawGraph().
-	function onScroll() {
-		if (!app || !containerRef) return;
-		const totalH = Math.max(1, commitList.length + 1) * ROW_HEIGHT;
-		const ratio =
-			totalH > MAX_CANVAS_PX ? MAX_CANVAS_PX / totalH : 1;
-		app.stage.y = -containerRef.scrollTop * ratio;
-		checkInfiniteScroll();
-	}
-
-	function checkInfiniteScroll() {
-		if (scrollThrottled) return;
-		scrollThrottled = true;
-		setTimeout(() => {
-			scrollThrottled = false;
-			const el = containerRef;
-			if (!el) return;
-			const { scrollTop, scrollHeight, clientHeight } = el;
-			if (scrollHeight - scrollTop - clientHeight < 800) {
-				loadMoreCommits();
-			}
-		}, 150);
-	}
-
-	$effect(() => {
-		const el = containerRef;
-		const ready = isInitialized; // reactive dep: run when Pixi is ready
-		if (!el || !ready || !app) return;
-		el.addEventListener("scroll", onScroll, { passive: true });
-		return () => el.removeEventListener("scroll", onScroll);
+$effect(() => {
+	const v = virtualizer;
+	const el = containerRef;
+	if (!v || !el) return;
+	const id = requestAnimationFrame(() => {
+		if (el.clientHeight > 0) v.measure();
 	});
+	return () => cancelAnimationFrame(id);
+});
 
-	// Fallback canvas: draw when Pixi failed and we have commits
-	$effect(() => {
-		if (!pixiFailed) return;
-		const canvas = fallbackCanvas;
-		const list = commitList;
-		if (!canvas || list.length === 0) return;
-		drawFallbackGraph(canvas, list);
-	});
+$effect(() => {
+	const el = containerRef;
+	if (!el) return;
+	const ro = new ResizeObserver(() => virtualizer?.measure());
+	ro.observe(el);
+	return () => ro.disconnect();
+});
 
-	onDestroy(() => {
-		if (app) {
-			app.ticker.stop();
-			app.destroy(true, { children: true, texture: true });
-			app = null;
-		}
-		canvasHostRef = null;
-		isInitialized = false;
-		isInitializing = false;
-	});
-
-	const virtualItems = $derived.by(() => {
-		virtualizerVersion;
-		const items = virtualizer?.getVirtualItems() ?? [];
-		// Fallback: when virtualizer returns empty but we have commits, render all
-		if (items.length === 0 && commitList.length > 0) {
-			return commitList.map((_, i) => ({
-				key: i,
-				index: i,
-				start: i * ROW_HEIGHT,
-				end: (i + 1) * ROW_HEIGHT,
-				size: ROW_HEIGHT,
-				lane: 0,
-			}));
-		}
-		return items;
-	});
-
-	function handleWipClick() {
-		showWip();
+const virtualItems = $derived.by(() => {
+	virtualizerVersion;
+	const items = virtualizer?.getVirtualItems() ?? [];
+	if (items.length === 0 && rowCount > 0) {
+		return Array.from({ length: rowCount }, (_, i) => ({
+			key: i,
+			index: i,
+			start: i * ROW_HEIGHT,
+			end: (i + 1) * ROW_HEIGHT,
+			size: ROW_HEIGHT,
+		}));
 	}
-
-	onMount(async () => {
-		// Wait one frame for CSS variables to be fully applied
-		await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
-
-		LANE_COLORS = buildLaneColors();
-		console.log(
-			"[Pixi] Lane colors:",
-			LANE_COLORS.map((c) => "#" + c.toString(16).padStart(6, "0")),
-		);
-
-		// If Pixi is already initialized, redraw with the updated colors
-		if (isInitialized && app && commitList.length > 0) {
-			untrack(() => {
-				drawGraph(commitList);
-			});
-		}
-	});
+	return items;
+});
 </script>
 
-<div class="graph-root">
+<div
+	class="graph-root"
+	style="--branch-col-width: {branchColWidth}px; --graph-col-width: {GRAPH_COL_WIDTH}px;"
+>
 	<div class="graph-header">
 		<span class="header-count">Commits: {commitList.length}</span>
 		<div class="search-box">
@@ -860,7 +872,8 @@ import { Virtualizer, observeElementRect, observeElementOffset, elementScroll } 
 			{/if}
 		</div>
 	</div>
-	{#if $isLoading}
+
+	{#if delayedLoading}
 		<div class="graph-state graph-loading">
 			<div class="graph-spinner" aria-label="Loading"></div>
 			<div class="graph-loading-text">Loading repository...</div>
@@ -871,126 +884,120 @@ import { Virtualizer, observeElementRect, observeElementOffset, elementScroll } 
 			<div class="empty-text">No commits found</div>
 		</div>
 	{:else}
-		<div class="scroll-container" bind:this={containerRef} role="list">
-			<div class="scroll-content" style="height: {totalHeight}px;">
-				{#if pixiFailed}
-					<div
-						class="canvas-col"
-						style="height: {totalHeight}px; position: relative;"
-					>
-						<canvas
-							bind:this={fallbackCanvas}
-							width={240}
-							height={totalHeight}
-						></canvas>
-					</div>
-				{:else}
-					<div
-						class="canvas-col canvas-container"
-						bind:this={canvasContainer}
-						style="height: {totalHeight}px; position: relative;"
-					></div>
-				{/if}
+		<div class="graph-headers">
+			<div class="gh-branch">BRANCH / TAG</div>
+			<div class="gh-graph">GRAPH</div>
+			<div class="gh-message">COMMIT MESSAGE</div>
+		</div>
+
+		<div class="graph-scroll-wrap" bind:this={graphScrollWrapRef}>
+			<div
+				class="graph-scroll"
+				bind:this={containerRef}
+				role="list"
+			>
 				<div
-					class="list-col"
+					class="scroll-content"
 					style="height: {totalHeight}px; position: relative;"
 				>
-					<!-- WIP row (always visible as first row) -->
-					<!-- svelte-ignore a11y_no_noninteractive_element_interactions a11y_click_events_have_key_events -->
-					<div
-						class="row wip-row"
-						class:wip-clean={$status.length === 0}
-						class:selected={$rightPanelMode === "wip" &&
-							!$selectedCommit}
-						style="position: absolute; top: 0; width: 100%; left: 0; right: 0; height: {ROW_HEIGHT}px;"
-						role="button"
-						tabindex="0"
-						onclick={handleWipClick}
-						onkeydown={(e) =>
-							(e.key === "Enter" || e.key === " ") &&
-							(e.preventDefault(), handleWipClick())}
-					>
-						<span class="hash wip-hash-placeholder"></span>
-						<div class="col-message labels-and-message">
-							<span class="wip-label">// WIP</span>
-							{#if totalChanges > 0}
-								<span class="wip-count-badge">{totalChanges}</span>
-							{:else}
-								<span class="wip-clean">No local changes</span>
-							{/if}
-						</div>
-						<span class="meta"></span>
-					</div>
-
-					{#each virtualItems as item (item.key)}
-						{@const lc = commitList[item.index]}
-						{@const branchLabels =
-							branchByHash.get(lc.commit.hash) ?? []}
-						<!-- svelte-ignore a11y_no_noninteractive_element_interactions a11y_click_events_have_key_events -->
-						<div
-							class="row"
-							class:selected={selected?.commit.hash ===
-								lc.commit.hash}
-							style="position: absolute; top: {item.start + ROW_HEIGHT}px; width: 100%; left: 0; right: 0;"
-							role="button"
-							tabindex="0"
-							onclick={() => selectCommit(lc)}
-							onkeydown={(e) =>
-								(e.key === "Enter" || e.key === " ") &&
-								(e.preventDefault(), selectCommit(lc))}
-							onmouseenter={(e) => {
-								tooltipCommit = lc;
-								tooltipPos = { x: e.clientX, y: e.clientY };
-							}}
-							onmousemove={(e) => {
-								if (
-									tooltipCommit?.commit.hash ===
-									lc.commit.hash
-								) {
-									tooltipPos = { x: e.clientX, y: e.clientY };
-								}
-							}}
-							onmouseleave={() => {
-								tooltipCommit = null;
-							}}
-						>
-							<span
-								class="hash"
-								style="color: {LANE_COLORS_CSS[
-									lc.color_index % 8
-								]}"
+					{#each virtualItems as vRow (vRow.key)}
+						{#if vRow.index === 0}
+							<!-- svelte-ignore a11y_no_noninteractive_element_interactions a11y_click_events_have_key_events -->
+							<div
+								class="row wip-row"
+								class:wip-clean={$status.length === 0}
+								class:selected={$rightPanelMode === "wip" && !$selectedCommit}
+								style="position: absolute; top: {vRow.start}px; left: 0; right: 0; height: {ROW_HEIGHT}px;"
+								role="button"
+								tabindex="0"
+								onclick={handleWipClick}
+								onkeydown={(e) =>
+									(e.key === "Enter" || e.key === " ") &&
+									(e.preventDefault(), handleWipClick())}
 							>
-								{lc.commit.short_hash}
-							</span>
-							<div class="labels-and-message">
-								{#each branchLabels as b}
+								<div class="col-branch"></div>
+								<div class="col-graph"></div>
+								<div class="col-message labels-and-message">
+									<span class="wip-label">// WIP</span>
+									{#if totalChanges > 0}
+										<span class="wip-count-badge">{totalChanges}</span>
+									{:else}
+										<span class="wip-clean">No local changes</span>
+									{/if}
+								</div>
+								<span class="meta"></span>
+							</div>
+						{:else}
+							{@const idx = vRow.index - 1}
+							{@const lc = commitList[idx]}
+							<!-- svelte-ignore a11y_no_noninteractive_element_interactions a11y_click_events_have_key_events -->
+							<div
+								class="row commit-row"
+								class:selected={selected?.commit.hash === lc.commit.hash}
+								style="position: absolute; top: {vRow.start}px; left: 0; right: 0; height: {ROW_HEIGHT}px;"
+								role="button"
+								tabindex="0"
+								onclick={() => selectCommit(lc)}
+								oncontextmenu={(e) => {
+									e.preventDefault();
+									ctxMenu = { x: e.clientX, y: e.clientY, commit: lc };
+								}}
+								onkeydown={(e) =>
+									(e.key === "Enter" || e.key === " ") &&
+									(e.preventDefault(), selectCommit(lc))}
+							>
+								<div class="col-branch">
+									{#each visibleLabels(lc) as label}
+										{@const pillColor = branchColorMap.get(label.name) ??
+											getLaneColor(lc.color_index)}
+										{@const pillTitle = !label.isTag && !label.isRemote && !label.isHead
+											? `${label.name} — Double-click to checkout`
+											: label.name}
+										<span
+											class="pill"
+											class:pill-head={label.isHead}
+											class:pill-checkoutable={!label.isTag && !label.isRemote && !label.isHead}
+											style="color: {pillColor}; background: color-mix(in srgb, {pillColor} 18%, var(--bg-tertiary)); border-color: color-mix(in srgb, {pillColor} 35%, var(--bg-tertiary));"
+											title={pillTitle}
+											onclick={(e) => handleBranchPillClick(e, lc, label)}
+										>
+											{#if label.isHead}✓ {/if}{label.name}
+										</span>
+									{/each}
+									{#if overflowCount(lc) > 0}
+										<span
+											class="pill-more"
+											title={hiddenLabels(lc).map((l) => l.name).join('\n')}
+										>
+											+{overflowCount(lc)}
+										</span>
+									{/if}
+								</div>
+								<div class="col-graph"></div>
+								<div class="labels-and-message">
 									<span
-										class="branch-pill"
-										class:remote={b.isRemote}
-										class:head={b.isHead}
+										class="commit-hash"
+										style="color: {getLaneColor(lc.color_index)}"
 									>
-										{b.name}
+										{lc.commit.short_hash}
 									</span>
-								{/each}
-								<span class="message" title={lc.commit.message}>
-									{lc.commit.message
-										.split("\n")[0]
-										.slice(0, 60)}
-									{lc.commit.message.split("\n")[0].length >
-									60
-										? "…"
-										: ""}
+									<span class="message" title={lc.commit.message}>
+										{lc.commit.message.split("\n")[0]}
+									</span>
+								</div>
+								<span class="meta">
+									{lc.commit.author_name} · {formatRelativeTime(lc.commit.timestamp)}
 								</span>
 							</div>
-							<span class="meta">
-								{lc.commit.author_name} · {formatRelativeTime(
-									lc.commit.timestamp,
-								)}
-							</span>
-						</div>
+						{/if}
 					{/each}
 				</div>
 			</div>
+			<canvas
+				bind:this={canvasEl}
+				class="graph-canvas"
+				aria-hidden="true"
+			></canvas>
 		</div>
 	{/if}
 
@@ -1009,6 +1016,61 @@ import { Virtualizer, observeElementRect, observeElementOffset, elementScroll } 
 			<div class="tooltip-date">
 				{formatTooltipDate(tooltipCommit.commit.timestamp)}
 			</div>
+		</div>
+	{/if}
+
+	{#if ctxMenu}
+		<!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
+		<div class="ctx-backdrop" onclick={() => (ctxMenu = null)} role="presentation"></div>
+
+		<div class="ctx-menu" style="top: {ctxMenu.y}px; left: {ctxMenu.x}px">
+			<div class="ctx-header">
+				{ctxMenu.commit.commit.short_hash}
+				<span class="ctx-msg">
+					{ctxMenu.commit.commit.message.split("\n")[0].slice(0, 40)}
+				</span>
+			</div>
+
+			<div class="ctx-divider"></div>
+
+			<button class="ctx-item" onclick={() => handleCherryPick(ctxMenu!.commit)}>
+				🍒 Cherry-pick onto current branch
+			</button>
+
+			<button class="ctx-item" onclick={() => handleRevert(ctxMenu!.commit)}>
+				↩ Revert commit
+			</button>
+
+			<div class="ctx-divider"></div>
+
+			<button class="ctx-item" onclick={() => handleReset(ctxMenu!.commit, "soft")}>
+				↺ Reset to here (soft)
+				<span class="ctx-hint">keep changes staged</span>
+			</button>
+
+			<button class="ctx-item" onclick={() => handleReset(ctxMenu!.commit, "mixed")}>
+				↺ Reset to here (mixed)
+				<span class="ctx-hint">keep changes unstaged</span>
+			</button>
+
+			<button class="ctx-item ctx-danger" onclick={() => handleReset(ctxMenu!.commit, "hard")}>
+				↺ Reset to here (hard)
+				<span class="ctx-hint">discard all changes</span>
+			</button>
+
+			<div class="ctx-divider"></div>
+
+			<button class="ctx-item" onclick={() => handleCreateBranchHere(ctxMenu!.commit)}>
+				⎇ Create branch from here
+			</button>
+
+			<button class="ctx-item" onclick={() => handleCopyHash(ctxMenu!.commit)}>
+				📋 Copy commit hash
+			</button>
+
+			<button class="ctx-item" onclick={() => handleCopyMessage(ctxMenu!.commit)}>
+				📋 Copy commit message
+			</button>
 		</div>
 	{/if}
 </div>
@@ -1049,7 +1111,7 @@ import { Virtualizer, observeElementRect, observeElementOffset, elementScroll } 
 
 	.search-input {
 		width: 100%;
-		padding: 4px 24px 4px 8px;
+		padding: 3px 24px 3px 8px;
 		font-size: 12px;
 		background: var(--bg-tertiary);
 		border: 1px solid var(--border);
@@ -1139,66 +1201,81 @@ import { Virtualizer, observeElementRect, observeElementOffset, elementScroll } 
 		font-size: 14px;
 	}
 
-	.scroll-container {
+	.graph-headers {
+		display: flex;
+		align-items: center;
+		padding: 0px 12px;
+		padding-bottom: 6px;
+		font-size: 10px;
+		font-weight: 600;
+		color: var(--text-muted);
+		text-transform: uppercase;
+		letter-spacing: 0.5px;
+		background: var(--bg-secondary);
+		border-bottom: 1px solid var(--border);
+		flex-shrink: 0;
+	}
+
+	.gh-branch {
+		width: var(--branch-col-width);
+		min-width: var(--branch-col-width);
+		flex-shrink: 0;
+	}
+	.gh-graph {
+		width: var(--graph-col-width);
+		min-width: var(--graph-col-width);
+		flex-shrink: 0;
+	}
+	.gh-message {
+		flex: 1;
+		min-width: 0;
+	}
+
+	.graph-scroll-wrap {
+		position: relative;
+		flex: 1;
+		min-height: 0;
+		height: 0;
+		display: flex;
+		flex-direction: column;
+		overflow: hidden;
+	}
+
+	.graph-scroll {
 		flex: 1;
 		overflow-y: auto;
-		overflow-x: auto;
+		overflow-x: hidden;
 		position: relative;
 		min-height: 0;
+		height: 100%;
+		max-height: 100%;
 		scroll-behavior: auto;
 		transform: translateZ(0);
 		-webkit-overflow-scrolling: touch;
 	}
 
+	.graph-scroll::-webkit-scrollbar {
+		width: 6px;
+	}
+	.graph-scroll::-webkit-scrollbar-thumb {
+		background: var(--border);
+		border-radius: 3px;
+	}
+
+	.graph-canvas {
+		position: absolute;
+		left: var(--branch-col-width);
+		top: 0;
+		width: var(--graph-col-width);
+		height: 100%;
+		pointer-events: auto;
+		z-index: 2;
+	}
+
 	.scroll-content {
-		display: flex;
-		flex-direction: row;
-		flex-wrap: nowrap;
+		position: relative;
 		width: 100%;
 		min-width: min-content;
-		position: relative;
-	}
-
-	.canvas-col {
-		width: 240px;
-		min-width: 240px;
-		flex-shrink: 0;
-		position: relative;
-	}
-
-	.canvas-container {
-		/* In flow (no position: absolute) so graph doesn't overlay list - both clickable */
-		width: 240px;
-		min-width: 240px;
-		height: 100%;
-		flex-shrink: 0;
-		position: relative;
-		pointer-events: auto;
-		z-index: 1;
-	}
-
-	.canvas-container :global(canvas) {
-		position: absolute;
-		top: 0;
-		left: 0;
-		pointer-events: auto;
-	}
-
-	.canvas-col :global(canvas) {
-		position: absolute;
-		top: 0;
-		left: 0;
-		display: block;
-		width: 240px !important;
-		min-width: 240px;
-		height: 100% !important;
-	}
-
-	.list-col {
-		flex: 1;
-		min-width: 0;
-		background: var(--bg-secondary);
-		color: var(--text-primary);
 	}
 
 	.row {
@@ -1206,7 +1283,7 @@ import { Virtualizer, observeElementRect, observeElementOffset, elementScroll } 
 		align-items: center;
 		gap: 8px;
 		padding: 0 12px;
-		height: 36px;
+		height: 28px;
 		cursor: pointer;
 		box-sizing: border-box;
 		border-radius: 4px;
@@ -1222,11 +1299,51 @@ import { Virtualizer, observeElementRect, observeElementOffset, elementScroll } 
 		background: var(--border);
 	}
 
-	.hash {
-		font-family: ui-monospace, monospace;
-		font-size: 12px;
-		min-width: 56px;
+	.col-branch {
+		width: var(--branch-col-width);
 		flex-shrink: 0;
+		padding: 0 6px 0 8px;
+		display: flex;
+		align-items: center;
+		gap: 4px;
+		overflow: hidden;
+		min-width: 0;
+		position: relative;
+	}
+
+	.pill {
+		display: inline-flex;
+		align-items: center;
+		padding: 1px 7px;
+		height: 17px;
+		border-radius: 3px;
+		font-size: 10px;
+		font-weight: 500;
+		white-space: nowrap;
+		overflow: visible;
+		text-overflow: clip;
+		max-width: none !important;
+		min-width: 0;
+		flex-shrink: 0;
+		border: 1px solid;
+		letter-spacing: 0.1px;
+		line-height: 1;
+	}
+	.pill-checkoutable {
+		cursor: pointer;
+	}
+	.pill-checkoutable:hover {
+		opacity: 0.9;
+	}
+
+	.col-graph {
+		width: var(--graph-col-width);
+		min-width: var(--graph-col-width);
+		flex-shrink: 0;
+		height: 100%;
+		position: relative;
+		overflow: visible;
+		z-index: 1;
 	}
 
 	.labels-and-message {
@@ -1238,23 +1355,19 @@ import { Virtualizer, observeElementRect, observeElementOffset, elementScroll } 
 		overflow: hidden;
 	}
 
-	.branch-pill {
-		font-size: 10px;
-		padding: 2px 6px;
-		border-radius: 4px;
-		background: var(--accent-blue);
-		color: var(--bg-primary);
+	.commit-hash {
+		font-family: "JetBrains Mono", monospace;
+		font-size: 11px;
 		flex-shrink: 0;
+		margin-right: 8px;
+		letter-spacing: 0.3px;
 	}
 
-	.branch-pill.remote {
-		background: var(--text-secondary);
-		color: var(--bg-primary);
-	}
-
-	.branch-pill.head {
-		background: var(--text-primary);
-		color: var(--bg-primary);
+	.pill-more {
+		font-size: 10px;
+		color: var(--text-muted);
+		flex-shrink: 0;
+		white-space: nowrap;
 	}
 
 	.message {
@@ -1271,14 +1384,10 @@ import { Virtualizer, observeElementRect, observeElementOffset, elementScroll } 
 		flex-shrink: 0;
 	}
 
-	.wip-hash-placeholder {
-		visibility: hidden;
-	}
-
 	.wip-label {
 		font-family: "JetBrains Mono", monospace;
 		font-size: 13px;
-		color: #e6edf3;
+		color: var(--text-primary);
 		font-weight: 600;
 		margin-right: 8px;
 	}
@@ -1306,35 +1415,8 @@ import { Virtualizer, observeElementRect, observeElementOffset, elementScroll } 
 		margin-left: 8px;
 	}
 
-	.wip-badge {
-		background: rgba(248, 81, 73, 0.2);
-		color: #f85149;
-		border: 1px solid rgba(248, 81, 73, 0.4);
-		border-radius: 10px;
-		padding: 0 7px;
-		font-size: 11px;
-		font-weight: 600;
-		margin-right: 4px;
-	}
-
-	.wip-staged-badge {
-		background: rgba(63, 185, 80, 0.2);
-		color: #3fb950;
-		border: 1px solid rgba(63, 185, 80, 0.4);
-		border-radius: 10px;
-		padding: 0 7px;
-		font-size: 11px;
-		font-weight: 600;
-	}
-
 	.wip-clean {
 		opacity: 0.5;
-	}
-
-	.wip-clean-label {
-		color: #484f58;
-		font-size: 12px;
-		font-style: italic;
 	}
 
 	.commit-tooltip {
@@ -1372,5 +1454,77 @@ import { Virtualizer, observeElementRect, observeElementOffset, elementScroll } 
 
 	.tooltip-date {
 		color: var(--text-muted);
+	}
+
+	.ctx-backdrop {
+		position: fixed;
+		inset: 0;
+		z-index: 998;
+	}
+
+	.ctx-menu {
+		position: fixed;
+		z-index: 999;
+		background: var(--bg-secondary);
+		border: 1px solid var(--border);
+		border-radius: 8px;
+		padding: 4px;
+		min-width: 240px;
+		box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+		font-size: 13px;
+	}
+
+	.ctx-header {
+		padding: 6px 10px 8px;
+		font-size: 11px;
+		color: var(--text-muted);
+		display: flex;
+		flex-direction: column;
+		gap: 2px;
+	}
+
+	.ctx-header .ctx-msg {
+		color: var(--text-secondary);
+		font-size: 12px;
+	}
+
+	.ctx-divider {
+		height: 1px;
+		background: var(--border);
+		margin: 2px 0;
+	}
+
+	.ctx-item {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		width: 100%;
+		padding: 7px 10px;
+		border: none;
+		background: transparent;
+		color: var(--text-primary);
+		cursor: pointer;
+		border-radius: 4px;
+		font-size: 13px;
+		text-align: left;
+		gap: 8px;
+	}
+
+	.ctx-item:hover {
+		background: var(--bg-tertiary);
+	}
+
+	.ctx-item.ctx-danger {
+		color: var(--accent-red);
+	}
+
+	.ctx-item.ctx-danger:hover {
+		background: rgba(248, 81, 73, 0.1);
+	}
+
+	.ctx-hint {
+		font-size: 10px;
+		color: var(--text-muted);
+		margin-left: auto;
 	}
 </style>
