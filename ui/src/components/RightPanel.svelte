@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { onMount } from "svelte";
+	import { onDestroy } from "svelte";
 	import {
 		currentRepo,
 		status,
@@ -41,7 +41,10 @@
 	let description = $state("");
 	let amend = $state(false);
 	let isCommitting = $state(false);
+	/** Which path is staging (reserved for row affordances); controls use delayed {@link showStagingBusy}. */
 	let isStaging = $state<string | null>(null);
+	/** Disables stage/unstage controls only after {@link STAGING_BUSY_DELAY_MS} if the op is still running. */
+	let showStagingBusy = $state(false);
 	let authorName = $state("");
 	let authorEmail = $state("");
 
@@ -59,6 +62,46 @@
 	const canCommit = $derived(
 		commitMessage.trim().length > 0 && stagedFiles.length > 0,
 	);
+
+	const STAGING_BUSY_DELAY_MS = 280;
+	let stagingInFlight = false;
+	let stagingBusyTimer: ReturnType<typeof setTimeout> | null = null;
+
+	async function withStagingUi<T>(
+		target: string | null,
+		fn: () => Promise<T>,
+	): Promise<T | undefined> {
+		if (stagingInFlight) return undefined;
+		stagingInFlight = true;
+		isStaging = target;
+		if (stagingBusyTimer !== null) {
+			clearTimeout(stagingBusyTimer);
+			stagingBusyTimer = null;
+		}
+		stagingBusyTimer = setTimeout(() => {
+			stagingBusyTimer = null;
+			showStagingBusy = true;
+		}, STAGING_BUSY_DELAY_MS);
+		try {
+			return await fn();
+		} finally {
+			if (stagingBusyTimer !== null) {
+				clearTimeout(stagingBusyTimer);
+				stagingBusyTimer = null;
+			}
+			stagingInFlight = false;
+			isStaging = null;
+			showStagingBusy = false;
+		}
+	}
+
+	onDestroy(() => {
+		if (stagingBusyTimer !== null) {
+			clearTimeout(stagingBusyTimer);
+			stagingBusyTimer = null;
+		}
+		showStagingBusy = false;
+	});
 
 	$effect(() => {
 		const repo = $currentRepo;
@@ -124,46 +167,26 @@
 		e.stopPropagation();
 		const repo = $currentRepo;
 		if (!repo) return;
-		isStaging = entry.path;
-		try {
-			await stageFile(repo, entry.path);
-		} finally {
-			isStaging = null;
-		}
+		await withStagingUi(entry.path, () => stageFile(repo, entry.path));
 	}
 
 	async function handleUnstage(entry: StatusEntry | IndexEntry, e: MouseEvent) {
 		e.stopPropagation();
 		const repo = $currentRepo;
 		if (!repo) return;
-		isStaging = entry.path;
-		try {
-			await unstageFile(repo, entry.path);
-		} finally {
-			isStaging = null;
-		}
+		await withStagingUi(entry.path, () => unstageFile(repo, entry.path));
 	}
 
 	async function handleStageAll() {
 		const repo = $currentRepo;
 		if (!repo) return;
-		isStaging = "__all__";
-		try {
-			await stageAll(repo);
-		} finally {
-			isStaging = null;
-		}
+		await withStagingUi("__all__", () => stageAll(repo));
 	}
 
 	async function handleUnstageAll() {
 		const repo = $currentRepo;
 		if (!repo) return;
-		isStaging = "__all__";
-		try {
-			await unstageAll(repo);
-		} finally {
-			isStaging = null;
-		}
+		await withStagingUi("__all__", () => unstageAll(repo));
 	}
 
 	async function handleUnstagedClick(entry: StatusEntry | IndexEntry) {
@@ -234,8 +257,7 @@
 		if (!entry) return;
 		const repo = $currentRepo;
 		if (!repo) return;
-		isStaging = entry.path;
-		stageFile(repo, entry.path).finally(() => { isStaging = null; });
+		void withStagingUi(entry.path, () => stageFile(repo, entry.path));
 	}
 
 	function handleMenuDiscard(entry: (StatusEntry | IndexEntry) | null) {
@@ -325,7 +347,7 @@
 			<button
 				class="hdr-action-btn green"
 				onclick={handleStageAll}
-				disabled={unstagedFiles.length === 0 || isStaging !== null}
+				disabled={unstagedFiles.length === 0 || showStagingBusy}
 				title="Stage all changes"
 			>
 				Stage All
@@ -349,13 +371,13 @@
 							<button
 								class="inline-action"
 								onclick={handleStageAll}
-								disabled={isStaging !== null}>Stage All</button
+								disabled={showStagingBusy}>Stage All</button
 							>
 							<button
 								class="inline-action discard-all-btn"
 								title="Discard all unstaged changes"
 								onclick={() => (showDiscardAllConfirm = true)}
-								disabled={isStaging !== null}
+								disabled={showStagingBusy}
 								style="padding: 2px 6px; display: inline-flex; align-items: center; justify-content: center;"
 							>
 								<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -415,13 +437,13 @@
 										<button
 											class="stage-btn discard-btn"
 											onclick={(e) => handleDiscard(entry, e)}
-											disabled={isStaging !== null}
+											disabled={showStagingBusy}
 											title="Discard changes to {entry.path}">↺</button
 										>
 										<button
 											class="stage-btn plus"
 											onclick={(e) => handleStage(entry, e)}
-											disabled={isStaging !== null}
+											disabled={showStagingBusy}
 											title="Stage {entry.path}">+</button
 										>
 									</div>
@@ -447,7 +469,7 @@
 						<button
 							class="inline-action"
 							onclick={handleUnstageAll}
-							disabled={isStaging !== null}>Unstage All</button
+							disabled={showStagingBusy}>Unstage All</button
 						>
 					{/if}
 				</div>
@@ -480,7 +502,7 @@
 									<button
 										class="stage-btn minus"
 										onclick={(e) => handleUnstage(entry, e)}
-										disabled={isStaging !== null}
+										disabled={showStagingBusy}
 										title="Unstage {entry.path}">−</button
 									>
 								</div>

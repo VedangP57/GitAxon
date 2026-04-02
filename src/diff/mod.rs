@@ -1,6 +1,7 @@
 //! Diff module for comparing and displaying changes.
 
-use std::path::Path;
+use std::fs;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use chrono::{TimeZone, Utc};
@@ -310,6 +311,145 @@ pub async fn diff_staged_json(repo_path: &str) -> GitfastResult<String> {
     let files = diff_staged(repo_path).await?;
     serde_json::to_string_pretty(&files)
         .map_err(|e| GitfastError::SerializationError(e.to_string()))
+}
+
+fn ensure_utf8_text(bytes: &[u8]) -> Result<String, GitfastError> {
+    const SAMPLE: usize = 8000;
+    let sample = bytes.len().min(SAMPLE);
+    let slice = &bytes[..sample];
+    if slice.iter().any(|b| *b == 0) {
+        return Err(GitfastError::GitOperationFailed(
+            "file appears to be binary".into(),
+        ));
+    }
+    Ok(String::from_utf8_lossy(bytes).into_owned())
+}
+
+fn workdir_path_under_repo(repo: &Repository, rel_path: &str) -> GitfastResult<PathBuf> {
+    let workdir = repo.workdir().ok_or_else(|| {
+        GitfastError::GitOperationFailed("bare repository has no working tree".into())
+    })?;
+    let joined = workdir.join(rel_path);
+    let workdir_canon = workdir.canonicalize().map_err(|e| {
+        GitfastError::GitOperationFailed(format!("working directory: {e}"))
+    })?;
+    let full_canon = joined.canonicalize().map_err(|e| {
+        GitfastError::GitOperationFailed(format!("file not readable: {e}"))
+    })?;
+    if !full_canon.starts_with(&workdir_canon) {
+        return Err(GitfastError::GitOperationFailed(
+            "path escapes repository root".into(),
+        ));
+    }
+    Ok(full_canon)
+}
+
+fn read_working_tree_utf8(repo: &Repository, rel_path: &str) -> GitfastResult<String> {
+    let path = workdir_path_under_repo(repo, rel_path)?;
+    let bytes = fs::read(&path).map_err(|e| GitfastError::GitOperationFailed(e.to_string()))?;
+    ensure_utf8_text(&bytes)
+}
+
+fn read_index_utf8(repo: &Repository, rel_path: &str) -> GitfastResult<String> {
+    let index = repo
+        .index()
+        .map_err(|e| GitfastError::GitOperationFailed(e.to_string()))?;
+    let entry = index
+        .get_path(Path::new(rel_path), 0)
+        .ok_or_else(|| GitfastError::GitOperationFailed("file is not staged".into()))?;
+    let blob = repo
+        .find_blob(entry.id)
+        .map_err(|e| GitfastError::GitOperationFailed(e.to_string()))?;
+    ensure_utf8_text(blob.content())
+}
+
+fn read_commit_tree_utf8(
+    repo: &Repository,
+    commit_hash: &str,
+    rel_path: &str,
+) -> GitfastResult<String> {
+    let obj = repo
+        .revparse_single(commit_hash)
+        .map_err(|_| GitfastError::CommitNotFound(commit_hash.to_string()))?;
+    let commit = obj
+        .peel_to_commit()
+        .map_err(|_| GitfastError::CommitNotFound(commit_hash.to_string()))?;
+    let tree = commit
+        .tree()
+        .map_err(|e| GitfastError::GitOperationFailed(e.to_string()))?;
+    let entry = tree
+        .get_path(Path::new(rel_path))
+        .map_err(|e| GitfastError::GitOperationFailed(e.to_string()))?;
+    let blob = repo
+        .find_blob(entry.id())
+        .map_err(|e| GitfastError::GitOperationFailed(e.to_string()))?;
+    ensure_utf8_text(blob.content())
+}
+
+/// Parent commit's tree (for a deleted path in a commit diff).
+fn read_commit_parent_tree_utf8(
+    repo: &Repository,
+    commit_hash: &str,
+    rel_path: &str,
+) -> GitfastResult<String> {
+    let obj = repo
+        .revparse_single(commit_hash)
+        .map_err(|_| GitfastError::CommitNotFound(commit_hash.to_string()))?;
+    let commit = obj
+        .peel_to_commit()
+        .map_err(|_| GitfastError::CommitNotFound(commit_hash.to_string()))?;
+    let parent = commit.parent(0).map_err(|_| {
+        GitfastError::GitOperationFailed(
+            "cannot load file before deletion: commit has no parent".into(),
+        )
+    })?;
+    let tree = parent
+        .tree()
+        .map_err(|e| GitfastError::GitOperationFailed(e.to_string()))?;
+    let entry = tree
+        .get_path(Path::new(rel_path))
+        .map_err(|e| GitfastError::GitOperationFailed(e.to_string()))?;
+    let blob = repo
+        .find_blob(entry.id())
+        .map_err(|e| GitfastError::GitOperationFailed(e.to_string()))?;
+    ensure_utf8_text(blob.content())
+}
+
+/// Full file contents for the diff viewer "file" tab (`working-tree`, `staged`, or `commit`).
+///
+/// `file_status` is the diff file status string (e.g. `"Deleted"`); when viewing a commit and the
+/// file was deleted in that commit, content is read from the first parent tree.
+pub fn read_diff_file_content(
+    repo_path: &str,
+    file_path: &str,
+    mode: &str,
+    commit_hash: Option<&str>,
+    file_status: Option<&str>,
+) -> GitfastResult<String> {
+    let path = Path::new(repo_path);
+    if !path.exists() {
+        return Err(GitfastError::RepoNotFound(repo_path.to_string()));
+    }
+    let repo = Repository::open(repo_path)
+        .map_err(|e| GitfastError::NotAGitRepo(e.to_string()))?;
+
+    match mode {
+        "working-tree" => read_working_tree_utf8(&repo, file_path),
+        "staged" => read_index_utf8(&repo, file_path),
+        "commit" => {
+            let hash = commit_hash.ok_or_else(|| {
+                GitfastError::GitOperationFailed("commit hash required for commit mode".into())
+            })?;
+            if file_status == Some("Deleted") {
+                read_commit_parent_tree_utf8(&repo, hash, file_path)
+            } else {
+                read_commit_tree_utf8(&repo, hash, file_path)
+            }
+        }
+        _ => Err(GitfastError::GitOperationFailed(format!(
+            "unknown diff mode: {mode}"
+        ))),
+    }
 }
 
 /// Returns git blame metadata for each line in a file.

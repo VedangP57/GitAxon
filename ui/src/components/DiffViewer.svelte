@@ -7,12 +7,17 @@
 		currentRepo,
 		selectedCommit
 	} from '$lib/store';
-	import { discardFile, gitBlame, type BlameLine } from '$lib/tauri';
+	import { discardFile, gitBlame, readDiffFileContent, type BlameLine } from '$lib/tauri';
 	import { showToast } from '$lib/toast';
 	import type { DiffFile, DiffHunk } from '$lib/types';
 	import { get } from 'svelte/store';
 
 	let activeTab = $state<'diff' | 'file'>('diff');
+	let fileViewText = $state<string | null>(null);
+	let fileViewLoading = $state(false);
+	let fileViewErr = $state<string | null>(null);
+	/** Latest file-view request; async results apply only if they match this key. */
+	let fileViewRequestKey = $state('');
 	let showDiscardConfirm = $state(false);
 	let blameMode = $state(false);
 	let blameData = $state<BlameLine[]>([]);
@@ -102,6 +107,51 @@
 			blameLoading = false;
 		}
 	}
+
+	$effect(() => {
+		const file = $diffFile;
+		const repo = $currentRepo;
+		const mode = $diffMode;
+		const commit = $selectedCommit;
+		const tab = activeTab;
+		const path = file ? getFilePath(file) : '';
+
+		if (tab !== 'file') {
+			fileViewLoading = false;
+			return;
+		}
+		if (!file || !repo || !path) {
+			fileViewLoading = false;
+			return;
+		}
+
+		const commitHash = mode === 'commit' ? commit?.commit.hash ?? null : null;
+		if (mode === 'commit' && !commitHash) {
+			fileViewErr = 'No commit selected';
+			fileViewText = null;
+			fileViewLoading = false;
+			return;
+		}
+
+		const requestKey = JSON.stringify([repo, path, mode, commitHash ?? '', file.status]);
+		fileViewRequestKey = requestKey;
+		fileViewLoading = true;
+		fileViewErr = null;
+		fileViewText = null;
+
+		void readDiffFileContent(repo, path, mode, commitHash, file.status).then(
+			(text) => {
+				if (fileViewRequestKey !== requestKey) return;
+				fileViewText = text;
+				fileViewLoading = false;
+			},
+			(e) => {
+				if (fileViewRequestKey !== requestKey) return;
+				fileViewErr = String(e);
+				fileViewLoading = false;
+			}
+		);
+	});
 
 	async function handleDiscardCurrentFile() {
 		const repo = get(currentRepo);
@@ -214,6 +264,16 @@
 						<div>{hoveredBlame.author} &lt;{hoveredBlame.author_email}&gt;</div>
 						<div>{hoveredBlame.date}</div>
 					</div>
+				{/if}
+			</div>
+		{:else if activeTab === 'file'}
+			<div class="file-view-pane">
+				{#if fileViewLoading}
+					<div class="blame-loading">Loading file…</div>
+				{:else if fileViewErr}
+					<div class="dv-empty file-view-err">{fileViewErr}</div>
+				{:else if fileViewText !== null}
+					<pre class="file-view-pre">{fileViewText}</pre>
 				{/if}
 			</div>
 		{:else if $diffFile.hunks.length === 0}
@@ -398,6 +458,28 @@
 		flex: 1;
 		overflow: auto;
 		min-height: 0;
+	}
+
+	.file-view-pane {
+		height: 100%;
+		min-height: 120px;
+	}
+	.file-view-pre {
+		margin: 0;
+		padding: 12px 14px;
+		font-family: 'JetBrains Mono', 'Fira Code', ui-monospace, monospace;
+		font-size: 12px;
+		line-height: 20px;
+		white-space: pre;
+		color: var(--text-primary);
+		tab-size: 4;
+	}
+	.file-view-err {
+		padding: 16px;
+		text-align: center;
+		color: var(--accent-orange);
+		font-size: 12px;
+		white-space: pre-wrap;
 	}
 
 	.dv-empty {

@@ -273,10 +273,11 @@ const laneStates = $derived.by(() => {
 			}
 		}
 
-		// Lane ends if this commit has no Straight/Fork edge from its lane
+		// Lane continues downward only on a straight first-parent edge.
+		// Fork edges are rendered as curves and should not keep the lane alive.
 		const hasDownwardEdge = lc.edges.some(
 			(e) =>
-				(e.edge_type === "Straight" || e.edge_type === "Fork") &&
+				e.edge_type === "Straight" &&
 				e.from_lane === lc.lane,
 		);
 		if (!hasDownwardEdge && lc.edges.length > 0) {
@@ -375,11 +376,12 @@ function drawCommitRow(
 		// Don't draw this lane if we're past its last commit
 		if (i > last) continue;
 
-		const isFirst = i === first;
-		const isLast = i === last;
+		const prevState = i > 0 ? states[i - 1] : undefined;
+		const hasIncomingFromAbove = prevState?.has(lane) ?? false;
+		const hasOutgoingBelow = i < last;
 
-		const y1 = isFirst ? cy : rowY;
-		const y2 = isLast ? cy : rowY + ROW_HEIGHT;
+		const y1 = hasIncomingFromAbove ? rowY : cy;
+		const y2 = hasOutgoingBelow ? rowY + ROW_HEIGHT : cy;
 
 		if (y1 >= y2) continue;
 

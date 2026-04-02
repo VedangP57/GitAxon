@@ -147,6 +147,22 @@ export async function getDiffStaged(repoPath: string): Promise<DiffFile[]> {
 	return parseJson<DiffFile[]>(raw);
 }
 
+export async function readDiffFileContent(
+	repoPath: string,
+	filePath: string,
+	mode: 'working-tree' | 'staged' | 'commit',
+	commitHash: string | null,
+	fileStatus: DiffFile['status'] | null
+): Promise<string> {
+	return invoke<string>('read_diff_file_content', {
+		repoPath,
+		filePath,
+		mode,
+		commitHash,
+		fileStatus
+	});
+}
+
 export async function gitBlame(
 	repoPath: string,
 	filePath: string,

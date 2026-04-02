@@ -311,6 +311,28 @@ async fn get_diff_staged(repo_path: String) -> Result<String, String> {
 }
 
 #[tauri::command]
+async fn read_diff_file_content(
+    repo_path: String,
+    file_path: String,
+    mode: String,
+    commit_hash: Option<String>,
+    file_status: Option<String>,
+) -> Result<String, String> {
+    tokio::task::spawn_blocking(move || {
+        gitaxon::diff::read_diff_file_content(
+            &repo_path,
+            &file_path,
+            &mode,
+            commit_hash.as_deref(),
+            file_status.as_deref(),
+        )
+        .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
 async fn git_blame(
     repo_path: String,
     file_path: String,
@@ -663,6 +685,7 @@ pub fn run() {
             get_diff_commit,
             get_diff_working_tree,
             get_diff_staged,
+            read_diff_file_content,
             git_blame,
             pull,
             push,

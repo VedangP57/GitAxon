@@ -164,6 +164,29 @@ export async function loadRepo(repoPath: string): Promise<void> {
 
 let refreshTimer: ReturnType<typeof setTimeout> | null = null;
 
+/** Only show the WIP header refresh indicator if getStatus takes longer than this. */
+const STATUS_REFRESH_INDICATOR_DELAY_MS = 280;
+let statusRefreshDepth = 0;
+let statusRefreshIndicatorTimer: ReturnType<typeof setTimeout> | null = null;
+
+function armStatusRefreshIndicator(): void {
+	if (statusRefreshIndicatorTimer !== null) return;
+	statusRefreshIndicatorTimer = setTimeout(() => {
+		statusRefreshIndicatorTimer = null;
+		if (statusRefreshDepth > 0) {
+			isRefreshingStore.set(true);
+		}
+	}, STATUS_REFRESH_INDICATOR_DELAY_MS);
+}
+
+function disarmStatusRefreshIndicator(): void {
+	if (statusRefreshIndicatorTimer !== null) {
+		clearTimeout(statusRefreshIndicatorTimer);
+		statusRefreshIndicatorTimer = null;
+	}
+	isRefreshingStore.set(false);
+}
+
 export function debouncedRefreshStatus(): void {
 	if (refreshTimer) clearTimeout(refreshTimer);
 	refreshTimer = setTimeout(() => {
@@ -175,10 +198,19 @@ export function debouncedRefreshStatus(): void {
 export async function refreshStatus(): Promise<void> {
 	const repo = get(currentRepoStore);
 	if (!repo) return;
+	statusRefreshDepth += 1;
+	if (statusRefreshDepth === 1) {
+		armStatusRefreshIndicator();
+	}
 	try {
 		statusStore.set(await getStatus(repo));
 	} catch (err) {
 		errorStore.set(err instanceof Error ? err.message : String(err));
+	} finally {
+		statusRefreshDepth -= 1;
+		if (statusRefreshDepth === 0) {
+			disarmStatusRefreshIndicator();
+		}
 	}
 }
 
