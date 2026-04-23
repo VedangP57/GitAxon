@@ -7,8 +7,20 @@ use std::sync::{LazyLock, Mutex};
 static SSH_USERNAME_CACHE: LazyLock<Mutex<HashMap<String, String>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
+/// Validate that a host alias contains only safe characters (alphanumeric, hyphens, dots).
+fn is_valid_host_alias(host: &str) -> bool {
+    !host.is_empty()
+        && host
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '.' || c == '_')
+}
+
 /// Run `ssh -T git@{host}` and parse GitHub username from "Hi username!" response.
 pub fn get_github_username_for_host(host_alias: &str) -> Option<String> {
+    if !is_valid_host_alias(host_alias) {
+        return None;
+    }
+
     let output = std::process::Command::new("ssh")
         .arg("-T")
         .arg("-o")
@@ -34,7 +46,7 @@ pub fn get_github_username_for_host(host_alias: &str) -> Option<String> {
 
 pub fn get_github_username_cached(host_alias: &str) -> Option<String> {
     {
-        let cache = SSH_USERNAME_CACHE.lock().unwrap();
+        let cache = SSH_USERNAME_CACHE.lock().ok()?;
         if let Some(username) = cache.get(host_alias) {
             return Some(username.clone());
         }
@@ -43,8 +55,9 @@ pub fn get_github_username_cached(host_alias: &str) -> Option<String> {
     let username = get_github_username_for_host(host_alias)?;
 
     {
-        let mut cache = SSH_USERNAME_CACHE.lock().unwrap();
-        cache.insert(host_alias.to_string(), username.clone());
+        if let Ok(mut cache) = SSH_USERNAME_CACHE.lock() {
+            cache.insert(host_alias.to_string(), username.clone());
+        }
     }
 
     Some(username)

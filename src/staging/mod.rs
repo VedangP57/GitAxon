@@ -146,11 +146,56 @@ pub async fn get_status(repo_path: &str) -> GitfastResult<Vec<IndexEntry>> {
 }
 
 fn open_repo(repo_path: &str) -> Result<Repository, GitfastError> {
-    let path = Path::new(repo_path);
-    if !path.exists() {
-        return Err(GitfastError::RepoNotFound(repo_path.to_string()));
+    crate::repo_pool::open_repo(repo_path)
+}
+
+/// Stages a single hunk by generating a patch and applying it to the index.
+/// The `patch_text` should be a valid unified diff for one hunk.
+pub fn stage_hunk(repo_path: &str, patch_text: &str) -> Result<(), String> {
+    let mut child = std::process::Command::new("git")
+        .current_dir(repo_path)
+        .args(["apply", "--cached", "--unidiff-zero", "-"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| e.to_string())?;
+
+    if let Some(ref mut stdin) = child.stdin {
+        use std::io::Write;
+        stdin.write_all(patch_text.as_bytes()).map_err(|e| e.to_string())?;
     }
-    Repository::open(repo_path).map_err(|e| GitfastError::NotAGitRepo(e.to_string()))
+
+    let output = child.wait_with_output().map_err(|e| e.to_string())?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(String::from_utf8_lossy(&output.stderr).trim().to_string())
+    }
+}
+
+/// Unstages a single hunk by applying the reverse patch to the index.
+pub fn unstage_hunk(repo_path: &str, patch_text: &str) -> Result<(), String> {
+    let mut child = std::process::Command::new("git")
+        .current_dir(repo_path)
+        .args(["apply", "--cached", "--unidiff-zero", "--reverse", "-"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| e.to_string())?;
+
+    if let Some(ref mut stdin) = child.stdin {
+        use std::io::Write;
+        stdin.write_all(patch_text.as_bytes()).map_err(|e| e.to_string())?;
+    }
+
+    let output = child.wait_with_output().map_err(|e| e.to_string())?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(String::from_utf8_lossy(&output.stderr).trim().to_string())
+    }
 }
 
 /// Stages an entire file.
@@ -281,6 +326,30 @@ pub async fn create_commit(
     .map_err(|e| GitfastError::GitOperationFailed(e.to_string()))?
 }
 
+/// Amends the last commit with current index + new message.
+pub fn amend_commit(
+    repo_path: &str,
+    message: &str,
+    author_name: &str,
+    author_email: &str,
+) -> Result<String, String> {
+    let repo = open_repo(repo_path).map_err(|e| e.to_string())?;
+    let mut index = repo.index().map_err(|e| e.to_string())?;
+    let tree_id = index.write_tree().map_err(|e| e.to_string())?;
+    let tree = repo.find_tree(tree_id).map_err(|e| e.to_string())?;
+
+    let head = repo.head().map_err(|e| e.to_string())?;
+    let parent = head.peel_to_commit().map_err(|e| e.to_string())?;
+
+    let sig = git2::Signature::now(author_name, author_email).map_err(|e| e.to_string())?;
+
+    let oid = parent
+        .amend(Some("HEAD"), Some(&sig), Some(&sig), None, Some(message), Some(&tree))
+        .map_err(|e| e.to_string())?;
+
+    Ok(oid.to_string())
+}
+
 /// Returns status as pretty-printed JSON.
 pub async fn get_status_json(repo_path: &str) -> GitfastResult<String> {
     let entries = get_status(repo_path).await?;
@@ -329,7 +398,7 @@ pub fn cherry_pick(repo_path: &str, commit_hash: &str) -> Result<String, String>
         .map_err(|e| format!("Failed to run git: {}", e))?;
 
     if output.status.success() {
-        Ok(format!("Cherry-picked commit {}", &commit_hash[..7]))
+        Ok(format!("Cherry-picked commit {}", commit_hash.get(..7).unwrap_or(commit_hash)))
     } else {
         Err(String::from_utf8_lossy(&output.stderr).trim().to_string())
     }
@@ -345,7 +414,7 @@ pub fn revert_commit(repo_path: &str, commit_hash: &str) -> Result<String, Strin
         .map_err(|e| format!("Failed to run git: {}", e))?;
 
     if output.status.success() {
-        Ok(format!("Reverted commit {}", &commit_hash[..7]))
+        Ok(format!("Reverted commit {}", commit_hash.get(..7).unwrap_or(commit_hash)))
     } else {
         Err(String::from_utf8_lossy(&output.stderr).trim().to_string())
     }
@@ -356,6 +425,12 @@ pub fn reset_to_commit(
     commit_hash: &str,
     mode: &str, // "soft", "mixed", "hard"
 ) -> Result<String, String> {
+    // Validate mode to prevent command injection
+    match mode {
+        "soft" | "mixed" | "hard" => {}
+        _ => return Err(format!("Invalid reset mode: '{}'. Must be soft, mixed, or hard", mode)),
+    }
+
     let output = std::process::Command::new("git")
         .current_dir(repo_path)
         .arg("reset")
@@ -364,8 +439,9 @@ pub fn reset_to_commit(
         .output()
         .map_err(|e| format!("Failed to run git: {}", e))?;
 
+    let short_hash = commit_hash.get(..7).unwrap_or(commit_hash);
     if output.status.success() {
-        Ok(format!("Reset to {} ({})", &commit_hash[..7], mode))
+        Ok(format!("Reset to {} ({})", short_hash, mode))
     } else {
         Err(String::from_utf8_lossy(&output.stderr).trim().to_string())
     }

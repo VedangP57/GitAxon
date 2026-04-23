@@ -273,6 +273,94 @@ pub async fn get_commits_json(
         .map_err(|e| GitfastError::SerializationError(e.to_string()))
 }
 
+/// Search commits with filters (query, author, date range, file path).
+/// Uses git CLI for filter support not available in gix.
+pub fn search_commits(
+    repo_path: &str,
+    query: Option<&str>,
+    author: Option<&str>,
+    since: Option<&str>,
+    until: Option<&str>,
+    path: Option<&str>,
+    limit: usize,
+) -> Result<Vec<crate::cache::CommitNode>, String> {
+    let mut args = vec![
+        "log".to_string(),
+        format!("--max-count={}", limit),
+        "--format=%H|%h|%s|%an|%ae|%ct|%P".to_string(),
+    ];
+
+    if let Some(q) = query {
+        if !q.is_empty() {
+            args.push(format!("--grep={}", q));
+            args.push("--regexp-ignore-case".to_string());
+        }
+    }
+    if let Some(a) = author {
+        if !a.is_empty() {
+            args.push(format!("--author={}", a));
+        }
+    }
+    if let Some(s) = since {
+        if !s.is_empty() {
+            args.push(format!("--since={}", s));
+        }
+    }
+    if let Some(u) = until {
+        if !u.is_empty() {
+            args.push(format!("--until={}", u));
+        }
+    }
+
+    if let Some(p) = path {
+        if !p.is_empty() {
+            args.push("--".to_string());
+            args.push(p.to_string());
+        }
+    }
+
+    let output = std::process::Command::new("git")
+        .current_dir(repo_path)
+        .args(&args)
+        .output()
+        .map_err(|e| e.to_string())?;
+
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut commits = Vec::new();
+
+    for line in stdout.lines() {
+        if line.is_empty() {
+            continue;
+        }
+        let parts: Vec<&str> = line.splitn(7, '|').collect();
+        if parts.len() < 6 {
+            continue;
+        }
+
+        let parent_hashes: Vec<String> = if parts.len() >= 7 && !parts[6].is_empty() {
+            parts[6].split(' ').map(|s| s.to_string()).collect()
+        } else {
+            vec![]
+        };
+
+        commits.push(crate::cache::CommitNode {
+            hash: parts[0].to_string(),
+            short_hash: parts[1].to_string(),
+            message: parts[2].to_string(),
+            author_name: parts[3].to_string(),
+            author_email: parts[4].to_string(),
+            timestamp: parts[5].parse::<i64>().unwrap_or(0),
+            parent_hashes,
+        });
+    }
+
+    Ok(commits)
+}
+
 /// Returns commits with lane assignments as pretty-printed JSON.
 pub async fn get_laned_commits_json(
     repo_path: &str,

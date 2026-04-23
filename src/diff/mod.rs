@@ -544,3 +544,126 @@ fn parse_blame_porcelain(output: &str) -> Result<Vec<BlameLine>, String> {
 
     Ok(lines)
 }
+
+/// Parse a unified diff (e.g. from `git stash show -p` or `git diff`) into DiffFile objects.
+pub fn parse_unified_diff(patch: &str) -> Vec<DiffFile> {
+    let mut files: Vec<DiffFile> = Vec::new();
+    let mut current_file: Option<DiffFile> = None;
+    let mut current_hunk: Option<DiffHunk> = None;
+    let mut old_line: u32 = 0;
+    let mut new_line: u32 = 0;
+
+    for raw_line in patch.lines() {
+        if raw_line.starts_with("diff --git ") {
+            // Flush previous hunk/file
+            if let Some(ref mut f) = current_file {
+                if let Some(h) = current_hunk.take() {
+                    f.hunks.push(h);
+                }
+                files.push(f.clone());
+            }
+            current_file = Some(DiffFile {
+                old_path: None,
+                new_path: None,
+                status: FileStatus::Modified,
+                hunks: Vec::new(),
+            });
+            current_hunk = None;
+        } else if raw_line.starts_with("--- ") {
+            if let Some(ref mut f) = current_file {
+                let path = raw_line.strip_prefix("--- a/").unwrap_or(
+                    raw_line.strip_prefix("--- ").unwrap_or(""),
+                );
+                if path != "/dev/null" {
+                    f.old_path = Some(path.to_string());
+                }
+            }
+        } else if raw_line.starts_with("+++ ") {
+            if let Some(ref mut f) = current_file {
+                let path = raw_line.strip_prefix("+++ b/").unwrap_or(
+                    raw_line.strip_prefix("+++ ").unwrap_or(""),
+                );
+                if path == "/dev/null" {
+                    f.status = FileStatus::Deleted;
+                } else {
+                    f.new_path = Some(path.to_string());
+                    if f.old_path.is_none() {
+                        f.status = FileStatus::Added;
+                    }
+                }
+            }
+        } else if raw_line.starts_with("@@ ") {
+            // Flush previous hunk
+            if let Some(ref mut f) = current_file {
+                if let Some(h) = current_hunk.take() {
+                    f.hunks.push(h);
+                }
+            }
+            // Parse @@ -old_start,old_lines +new_start,new_lines @@
+            let parts: Vec<&str> = raw_line.split_whitespace().collect();
+            let (os, ol) = parse_hunk_range(parts.get(1).unwrap_or(&"-0,0"));
+            let (ns, nl) = parse_hunk_range(parts.get(2).unwrap_or(&"+0,0"));
+            old_line = os;
+            new_line = ns;
+            current_hunk = Some(DiffHunk {
+                old_start: os,
+                old_lines: ol,
+                new_start: ns,
+                new_lines: nl,
+                lines: Vec::new(),
+            });
+        } else if let Some(ref mut hunk) = current_hunk {
+            if raw_line.starts_with('+') {
+                hunk.lines.push(DiffLine {
+                    content: raw_line[1..].to_string(),
+                    line_type: LineType::Added,
+                    old_line_no: None,
+                    new_line_no: Some(new_line),
+                });
+                new_line += 1;
+            } else if raw_line.starts_with('-') {
+                hunk.lines.push(DiffLine {
+                    content: raw_line[1..].to_string(),
+                    line_type: LineType::Deleted,
+                    old_line_no: Some(old_line),
+                    new_line_no: None,
+                });
+                old_line += 1;
+            } else if raw_line.starts_with(' ') || raw_line.is_empty() {
+                let content = if raw_line.is_empty() { "" } else { &raw_line[1..] };
+                hunk.lines.push(DiffLine {
+                    content: content.to_string(),
+                    line_type: LineType::Context,
+                    old_line_no: Some(old_line),
+                    new_line_no: Some(new_line),
+                });
+                old_line += 1;
+                new_line += 1;
+            }
+        }
+        // Check for rename detection
+        if raw_line.starts_with("rename from ") || raw_line.starts_with("similarity index") {
+            if let Some(ref mut f) = current_file {
+                f.status = FileStatus::Renamed;
+            }
+        }
+    }
+
+    // Flush final file
+    if let Some(ref mut f) = current_file {
+        if let Some(h) = current_hunk.take() {
+            f.hunks.push(h);
+        }
+        files.push(f.clone());
+    }
+
+    files
+}
+
+fn parse_hunk_range(s: &str) -> (u32, u32) {
+    let s = s.trim_start_matches(['-', '+'].as_ref());
+    let parts: Vec<&str> = s.split(',').collect();
+    let start = parts.first().and_then(|p| p.parse().ok()).unwrap_or(0);
+    let lines = parts.get(1).and_then(|p| p.parse().ok()).unwrap_or(1);
+    (start, lines)
+}

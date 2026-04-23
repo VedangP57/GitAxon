@@ -5,6 +5,7 @@
 	import CenterPanel from "./CenterPanel.svelte";
 	import RightPanel from "./RightPanel.svelte";
 	import BranchSidebar from "./BranchSidebar.svelte";
+	import TabBar from "./TabBar.svelte";
 	import Toast from "./Toast.svelte";
 	import {
 		loadRepo,
@@ -709,6 +710,8 @@
 			</div>
 		</div>
 	</header>
+
+	<TabBar />
 
 	<!-- ═══ MAIN BODY (flex row) ═══ -->
 	<div class="main-body">

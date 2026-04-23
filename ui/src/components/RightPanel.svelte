@@ -11,6 +11,9 @@
 		loadRepo,
 		selectFile,
 		selectFileFromStaging,
+		showFileHistory,
+		operationState,
+		openConflictResolver,
 	} from "$lib/store";
 	import {
 		stageFile,
@@ -117,23 +120,28 @@
 	});
 
 	function getStatusIcon(entry: StatusEntry | IndexEntry): { char: string; cls: string } {
-		// Map Rust status codes and legacy IndexEntry statuses to UI icons
 		const code = (entry as StatusEntry).status;
 		if (typeof code === "string") {
-			if (code === "A") return { char: "A", cls: "icon-add" };
-			if (code === "D") return { char: "D", cls: "icon-del" };
-			if (code === "WM" || code === "WD" || code === "M") {
-				return { char: "M", cls: "icon-mod" };
+			switch (code) {
+				case "A":  return { char: "A", cls: "icon-add" };
+				case "D":  return { char: "D", cls: "icon-del" };
+				case "M":  return { char: "M", cls: "icon-mod" };
+				case "WM": return { char: "M", cls: "icon-mod" };
+				case "WD": return { char: "D", cls: "icon-del" };
+				case "WR": return { char: "R", cls: "icon-rename" };
+				case "R":  return { char: "R", cls: "icon-rename" };
+				case "T":  return { char: "T", cls: "icon-typechange" };
+				case "?":  return { char: "U", cls: "icon-untracked" };
+				case "U":  return { char: "!", cls: "icon-conflict" };
+				default:   return { char: code, cls: "icon-mod" };
 			}
 		}
 		const legacyStatus = (entry as IndexEntry).status;
 		switch (legacyStatus) {
 			case "Untracked":
-				return { char: "A", cls: "icon-add" };
+				return { char: "U", cls: "icon-untracked" };
 			case "Conflicted":
 				return { char: "!", cls: "icon-conflict" };
-			case "Staged":
-			case "Unstaged":
 			default:
 				return { char: "M", cls: "icon-mod" };
 		}
@@ -141,12 +149,11 @@
 
 	function getCommitFileIcon(file: DiffFile): { char: string; cls: string } {
 		switch (file.status) {
-			case "Added":
-				return { char: "A", cls: "icon-add" };
-			case "Deleted":
-				return { char: "D", cls: "icon-del" };
-			default:
-				return { char: "M", cls: "icon-mod" };
+			case "Added":    return { char: "A", cls: "icon-add" };
+			case "Deleted":  return { char: "D", cls: "icon-del" };
+			case "Renamed":  return { char: "R", cls: "icon-rename" };
+			case "Copied":   return { char: "C", cls: "icon-copy" };
+			default:         return { char: "M", cls: "icon-mod" };
 		}
 	}
 
@@ -278,16 +285,21 @@
 		if (!repo || !canCommit) return;
 		isCommitting = true;
 		try {
+			const fullMessage = description.trim()
+				? `${commitMessage.trim()}\n\n${description.trim()}`
+				: commitMessage.trim();
 			await createCommit(
 				repo,
-				commitMessage.trim(),
+				fullMessage,
 				authorName,
 				authorEmail,
+				amend,
 			);
 			await loadRepo(repo);
 			commitMessage = "";
 			description = "";
-			showToast("Commit created successfully", "success");
+			amend = false;
+			showToast(amend ? "Commit amended" : "Commit created successfully", "success");
 		} catch (e) {
 			showToast(e instanceof Error ? e.message : String(e), "error");
 		} finally {
@@ -353,6 +365,18 @@
 				Stage All
 			</button>
 		</div>
+
+		{#if $operationState && ($operationState.in_merge || $operationState.in_rebase || $operationState.in_cherry_pick || $operationState.in_revert)}
+			<div class="operation-banner">
+				<span class="op-icon">!</span>
+				<span class="op-text">
+					{$operationState.in_merge ? 'MERGE' : $operationState.in_rebase ? 'REBASE' : $operationState.in_cherry_pick ? 'CHERRY-PICK' : 'REVERT'} IN PROGRESS
+				</span>
+				{#if $operationState.conflicted_files.length > 0}
+					<span class="op-conflicts">{$operationState.conflicted_files.length} conflicts</span>
+				{/if}
+			</div>
+		{/if}
 
 		<div class="rp-scrollable">
 			<!-- UNSTAGED section -->
@@ -638,6 +662,33 @@
 	{/if}
 </div>
 
+{#if fileMenuOpen && fileMenuEntry}
+	<!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
+	<div class="file-menu-backdrop" onclick={closeFileMenu}></div>
+	<div class="file-menu" style="left:{fileMenuX}px; top:{fileMenuY}px">
+		<button class="menu-item" onclick={() => { handleMenuStage(fileMenuEntry); closeFileMenu(); }}>
+			{fileMenuEntry && (fileMenuEntry as any).staged ? 'Unstage file' : 'Stage file'}
+		</button>
+		<button class="menu-item" onclick={() => {
+			if (fileMenuEntry) showFileHistory(fileMenuEntry.path);
+			closeFileMenu();
+		}}>
+			Show file history
+		</button>
+		<button class="menu-item" onclick={() => {
+			if (fileMenuEntry) navigator.clipboard.writeText(fileMenuEntry.path);
+			closeFileMenu();
+		}}>
+			Copy path
+		</button>
+		{#if fileMenuEntry && !(fileMenuEntry as any).staged}
+			<button class="menu-item discard-menu-item" onclick={() => { handleMenuDiscard(fileMenuEntry); closeFileMenu(); }}>
+				Discard changes
+			</button>
+		{/if}
+	</div>
+{/if}
+
 <style>
 	.right-panel {
 		display: flex;
@@ -810,7 +861,45 @@
 		color: var(--accent-red);
 	}
 	.icon-conflict {
+		color: var(--accent-magenta, #ff6ac1);
+	}
+	.icon-untracked {
+		color: var(--accent-grey, #8b949e);
+	}
+	.icon-rename {
+		color: var(--accent-cyan, #56d4dd);
+	}
+	.icon-copy {
+		color: var(--accent-blue, #58a6ff);
+	}
+	.icon-typechange {
+		color: var(--accent-yellow, #e3b341);
+	}
+
+	.operation-banner {
+		display: flex;
+		align-items: center;
+		gap: 6px;
+		padding: 6px 12px;
+		background: rgba(248, 81, 73, 0.1);
+		border-bottom: 1px solid rgba(248, 81, 73, 0.3);
+		flex-shrink: 0;
+	}
+	.op-icon {
+		font-size: 12px;
+		font-weight: 700;
+		color: var(--accent-red, #f85149);
+	}
+	.op-text {
+		font-size: 10px;
+		font-weight: 700;
+		letter-spacing: 0.5px;
+		color: var(--accent-red, #f85149);
+	}
+	.op-conflicts {
+		font-size: 10px;
 		color: var(--accent-orange);
+		margin-left: auto;
 	}
 
 	.file-name {

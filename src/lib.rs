@@ -1,15 +1,22 @@
 //! Gitfast-core: fast git operations library.
 
+pub mod bisect;
 pub mod branches;
 pub mod cache;
+pub mod conflicts;
 pub mod identity;
 pub mod diff;
 pub mod errors;
 pub mod graph;
+pub mod history;
+pub mod rebase;
 pub mod remotes;
+pub mod repo_pool;
 pub mod staging;
 pub mod stash;
+pub mod tags;
 pub mod watcher;
+pub mod worktree;
 
 
 // Types - cache
@@ -30,6 +37,9 @@ pub use staging::{IndexEntry, StagingStatus};
 // Types - branches
 pub use branches::BranchInfo;
 
+// Types - tags
+pub use tags::TagInfo;
+
 // Types - remotes
 pub use remotes::{FetchResult, PushResult, RemoteInfo};
 
@@ -44,6 +54,9 @@ pub use staging::get_status_json;
 
 // JSON functions - branches
 pub use branches::list_branches_json;
+
+// JSON functions - tags
+pub use tags::list_tags_json;
 
 // JSON functions - remotes
 pub use remotes::list_remotes_json;

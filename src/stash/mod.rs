@@ -121,6 +121,23 @@ pub fn stash_drop(repo_path: &str, index: usize) -> Result<String, String> {
     }
 }
 
+/// Returns the diff of a stash entry as a list of DiffFile objects.
+pub fn stash_show(repo_path: &str, index: usize) -> Result<Vec<crate::diff::DiffFile>, String> {
+    let stash_ref = format!("stash@{{{}}}", index);
+    let output = std::process::Command::new("git")
+        .current_dir(repo_path)
+        .args(["stash", "show", "-p", "--no-color", &stash_ref])
+        .output()
+        .map_err(|e| e.to_string())?;
+
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
+    }
+
+    let patch = String::from_utf8_lossy(&output.stdout);
+    Ok(crate::diff::parse_unified_diff(&patch))
+}
+
 pub fn stash_branch(repo_path: &str, index: usize, branch_name: &str) -> Result<String, String> {
     let stash_ref = format!("stash@{{{}}}", index);
     let output = std::process::Command::new("git")

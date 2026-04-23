@@ -15,6 +15,7 @@ import {
 import {
 	commits,
 	branches,
+	tags,
 	status,
 	selectedCommit,
 	selectCommit,
@@ -25,15 +26,24 @@ import {
 	loadRepo,
 	currentRepo,
 	createBranchFromHash,
+	centerView,
+	bisectState,
+	startBisect,
+	markBisectGood,
+	markBisectBad,
+	skipBisectCommit,
+	resetBisect,
 } from "$lib/store";
 import { onMount, onDestroy } from "svelte";
-import type { BranchInfo, LanedCommit } from "$lib/types";
+import type { BranchInfo, TagInfo, LanedCommit } from "$lib/types";
 import { showToast } from "$lib/toast";
 import {
 	cherryPick,
 	revertCommit,
 	resetToCommit,
 	checkoutBranch,
+	searchCommits,
+	getRebaseTodoForRange,
 } from "$lib/tauri";
 
 let { leftPanelOpen = true }: { leftPanelOpen?: boolean } = $props();
@@ -166,6 +176,56 @@ let virtualizerVersion = $state(0);
 let tooltipCommit = $state<LanedCommit | null>(null);
 let tooltipPos = $state({ x: 0, y: 0 });
 let searchQuery = $state("");
+let filterOpen = $state(false);
+let filterAuthor = $state("");
+let filterSince = $state("");
+let filterUntil = $state("");
+let filterPath = $state("");
+let isSearching = $state(false);
+let searchResults = $state<LanedCommit[] | null>(null);
+let bisectBadPending = $state<string | null>(null); // Hash of the bad commit waiting for a good commit
+
+const hasActiveFilters = $derived(
+	filterAuthor.trim() !== "" ||
+	filterSince !== "" ||
+	filterUntil !== "" ||
+	filterPath.trim() !== ""
+);
+
+async function applyFilters() {
+	const repo = get(currentRepo);
+	if (!repo) return;
+	if (!hasActiveFilters && !searchQuery.trim()) {
+		searchResults = null;
+		return;
+	}
+	isSearching = true;
+	try {
+		const results = await searchCommits(repo, {
+			query: searchQuery.trim() || undefined,
+			author: filterAuthor.trim() || undefined,
+			since: filterSince || undefined,
+			until: filterUntil || undefined,
+			path: filterPath.trim() || undefined,
+			limit: 500,
+		});
+		searchResults = results;
+	} catch (e) {
+		showToast(String(e), 'error');
+	} finally {
+		isSearching = false;
+	}
+}
+
+function clearFilters() {
+	filterAuthor = "";
+	filterSince = "";
+	filterUntil = "";
+	filterPath = "";
+	searchResults = null;
+	filterOpen = false;
+}
+
 let scrollThrottled = false;
 let delayedLoading = $state(false);
 let loadingTimer: ReturnType<typeof setTimeout> | null = null;
@@ -182,9 +242,12 @@ const branchColWidth = $derived(
 );
 
 const commitList = $derived.by(() => {
+	// If server-side search results are active, use them
+	if (searchResults !== null) return searchResults;
 	const all = $commits;
 	const q = searchQuery.trim().toLowerCase();
 	if (!q) return all;
+	// Client-side filter for quick text search (no advanced filters)
 	return all.filter(
 		(lc) =>
 			lc.commit.message.toLowerCase().includes(q) ||
@@ -194,6 +257,7 @@ const commitList = $derived.by(() => {
 	);
 });
 const branchList = $derived($branches);
+const tagList = $derived($tags);
 const selected = $derived($selectedCommit);
 
 const rowCount = $derived(commitList.length + 1);
@@ -205,6 +269,16 @@ const branchByHash = $derived.by(() => {
 		const existing = map.get(b.tipHash) ?? [];
 		existing.push(b);
 		map.set(b.tipHash, existing);
+	}
+	return map;
+});
+
+const tagByHash = $derived.by(() => {
+	const map = new Map<string, TagInfo[]>();
+	for (const t of tagList) {
+		const existing = map.get(t.hash) ?? [];
+		existing.push(t);
+		map.set(t.hash, existing);
 	}
 	return map;
 });
@@ -267,14 +341,12 @@ const laneStates = $derived.by(() => {
 				active.set(edge.to_lane, edge.color_index);
 			}
 			if (edge.edge_type === "Merge") {
-				// to_lane (incoming branch) stays active until we reach its commit
 				active.set(edge.to_lane, edge.color_index);
 				active.set(edge.from_lane, lc.color_index);
 			}
 		}
 
 		// Lane continues downward only on a straight first-parent edge.
-		// Fork edges are rendered as curves and should not keep the lane alive.
 		const hasDownwardEdge = lc.edges.some(
 			(e) =>
 				e.edge_type === "Straight" &&
@@ -285,6 +357,14 @@ const laneStates = $derived.by(() => {
 		}
 		if (lc.edges.length === 0) {
 			active.delete(lc.lane);
+		}
+
+		// Remove lanes that have no more commits below
+		for (const [lane] of active) {
+			const lastIdx = laneLastCommitIdx.get(lane) ?? 0;
+			if (lastIdx < i) {
+				active.delete(lane);
+			}
 		}
 
 		const snapshot = new Map<number, number>();
@@ -410,7 +490,7 @@ function drawCommitRow(
 		ctx.stroke();
 	}
 
-	// 2. Bezier curves — smooth arc, no horizontal overshoot
+	// 2. Quarter-circle arc curves (GitKraken style)
 	for (const edge of lc.edges) {
 		if (edge.from_lane === edge.to_lane) continue;
 		const type = edge.edge_type;
@@ -418,7 +498,6 @@ function drawCommitRow(
 
 		const x1 = laneX(edge.from_lane);
 		const x2 = laneX(edge.to_lane);
-		const y1 = cy;
 		const y2 = rowY + ROW_HEIGHT;
 
 		const color =
@@ -429,15 +508,11 @@ function drawCommitRow(
 		ctx.lineWidth = LINE_WIDTH;
 		ctx.lineCap = "round";
 
-		if (type === "Merge" || type === "Fork") {
-			// Line goes straight down for 85% of row, turns only at bottom
-			const cp1x = x1;
-			const cp1y = y1 + (y2 - y1) * 0.85;
-			const cp2x = x2;
-			const cp2y = y2;
-			ctx.moveTo(x1, y1);
-			ctx.bezierCurveTo(cp1x, cp1y, cp2x, cp2y, x2, y2);
-		}
+		// Straight line down then quarter-circle arc at bottom
+		const r = Math.min(Math.abs(x2 - x1), ROW_HEIGHT * 0.4);
+		ctx.moveTo(x1, cy);
+		ctx.lineTo(x1, y2 - r);
+		ctx.quadraticCurveTo(x1, y2, x2, y2);
 		ctx.stroke();
 	}
 
@@ -446,7 +521,7 @@ function drawCommitRow(
 	const dotColor =
 		laneColorCache[lc.color_index % 8] ?? getLaneColor(lc.color_index);
 	const isMerge = (lc.commit.parent_hashes?.length ?? 0) > 1;
-	const dotR = isMerge ? DOT_RADIUS + 1 : DOT_RADIUS;
+	const dotR = isMerge ? DOT_RADIUS + 1.5 : DOT_RADIUS;
 
 	ctx.beginPath();
 	ctx.arc(dotX, cy, dotR + 0.5, 0, Math.PI * 2);
@@ -608,6 +683,36 @@ async function handleReset(lc: LanedCommit, mode: "soft" | "mixed" | "hard") {
 async function handleCreateBranchHere(lc: LanedCommit) {
 	ctxMenu = null;
 	createBranchFromHash.set(lc.commit.hash);
+}
+
+async function handleBisectBad(lc: LanedCommit) {
+	ctxMenu = null;
+	bisectBadPending = lc.commit.hash;
+	showToast(`Bisect: marked ${lc.commit.short_hash} as bad. Now right-click a known good commit.`, 'info');
+}
+
+async function handleBisectGood(lc: LanedCommit) {
+	ctxMenu = null;
+	if (!bisectBadPending) {
+		showToast('Start bisect by marking a bad commit first', 'error');
+		return;
+	}
+	try {
+		await startBisect(bisectBadPending, lc.commit.hash);
+		bisectBadPending = null;
+		showToast('Bisect started', 'success');
+	} catch (e) {
+		showToast(String(e), 'error');
+	}
+}
+
+async function handleRebaseOnto(lc: LanedCommit) {
+	ctxMenu = null;
+	// Switch to rebase view — the RebasePanel will load the todo list
+	centerView.set('rebase');
+	// We need to notify the RebasePanel of the target hash.
+	// Dispatch a custom event that the RebasePanel can listen for.
+	window.dispatchEvent(new CustomEvent('gitaxon-rebase-setup', { detail: { hash: lc.commit.hash } }));
 }
 
 async function handleCopyHash(lc: LanedCommit) {
@@ -865,15 +970,63 @@ const virtualItems = $derived.by(() => {
 			{#if searchQuery}
 				<button
 					class="search-clear"
-					onclick={() => (searchQuery = "")}
+					onclick={() => { searchQuery = ""; searchResults = null; }}
 					title="Clear search"
 					type="button"
 				>
 					×
 				</button>
 			{/if}
+			<button
+				class="filter-btn"
+				class:active={hasActiveFilters || filterOpen}
+				onclick={() => (filterOpen = !filterOpen)}
+				title="Advanced filters"
+				type="button"
+			>
+				⚙{#if hasActiveFilters}<span class="filter-badge"></span>{/if}
+			</button>
 		</div>
+		{#if filterOpen}
+			<div class="filter-panel">
+				<div class="filter-row">
+					<label class="filter-label">Author<input class="filter-input" type="text" placeholder="Author name..." bind:value={filterAuthor} /></label>
+					<label class="filter-label">File<input class="filter-input" type="text" placeholder="path/to/file" bind:value={filterPath} /></label>
+				</div>
+				<div class="filter-row">
+					<label class="filter-label">Since<input class="filter-input" type="date" bind:value={filterSince} /></label>
+					<label class="filter-label">Until<input class="filter-input" type="date" bind:value={filterUntil} /></label>
+				</div>
+				<div class="filter-actions">
+					<button class="filter-apply" onclick={applyFilters} disabled={isSearching}>
+						{isSearching ? 'Searching...' : 'Apply Filters'}
+					</button>
+					{#if hasActiveFilters}
+						<button class="filter-clear" onclick={clearFilters}>Clear</button>
+					{/if}
+				</div>
+			</div>
+		{/if}
 	</div>
+
+	{#if $bisectState?.active}
+		<div class="bisect-bar">
+			<span class="bisect-icon">🔍</span>
+			<span class="bisect-text">BISECT: testing {$bisectState.current_short_hash}</span>
+			{#if $bisectState.steps_remaining != null}
+				<span class="bisect-steps">~{$bisectState.steps_remaining} steps left</span>
+			{/if}
+			{#if $bisectState.found_hash}
+				<span class="bisect-found">Found: {$bisectState.found_hash.slice(0, 7)}</span>
+			{/if}
+			<div class="bisect-actions">
+				<button class="bisect-btn good" onclick={markBisectGood}>Good</button>
+				<button class="bisect-btn bad" onclick={markBisectBad}>Bad</button>
+				<button class="bisect-btn skip" onclick={skipBisectCommit}>Skip</button>
+				<button class="bisect-btn reset" onclick={resetBisect}>End Bisect</button>
+			</div>
+		</div>
+	{/if}
 
 	{#if delayedLoading}
 		<div class="graph-state graph-loading">
@@ -974,6 +1127,15 @@ const virtualItems = $derived.by(() => {
 											+{overflowCount(lc)}
 										</span>
 									{/if}
+									{#each tagByHash.get(lc.commit.hash) ?? [] as tag (tag.name)}
+										<span
+											class="pill pill-tag"
+											style="color: var(--accent-yellow); background: color-mix(in srgb, var(--accent-yellow) 12%, var(--bg-tertiary)); border-color: color-mix(in srgb, var(--accent-yellow) 30%, var(--bg-tertiary));"
+											title={tag.name}
+										>
+											🏷 {tag.name}
+										</span>
+									{/each}
 								</div>
 								<div class="col-graph"></div>
 								<div class="labels-and-message">
@@ -1066,6 +1228,22 @@ const virtualItems = $derived.by(() => {
 				⎇ Create branch from here
 			</button>
 
+			<button class="ctx-item" onclick={() => handleRebaseOnto(ctxMenu!.commit)}>
+				⎇ Rebase current branch onto here
+			</button>
+
+			<div class="ctx-divider"></div>
+
+			{#if !$bisectState?.active && !bisectBadPending}
+				<button class="ctx-item" onclick={() => handleBisectBad(ctxMenu!.commit)}>
+					🔍 Bisect: mark as bad
+				</button>
+			{:else if bisectBadPending}
+				<button class="ctx-item" onclick={() => handleBisectGood(ctxMenu!.commit)}>
+					🔍 Bisect: mark as good (start)
+				</button>
+			{/if}
+
 			<button class="ctx-item" onclick={() => handleCopyHash(ctxMenu!.commit)}>
 				📋 Copy commit hash
 			</button>
@@ -1147,6 +1325,122 @@ const virtualItems = $derived.by(() => {
 	.search-clear:hover {
 		background: var(--border);
 		color: var(--text-primary);
+	}
+
+	.filter-btn {
+		width: 24px;
+		height: 24px;
+		border: none;
+		background: transparent;
+		color: var(--text-muted);
+		cursor: pointer;
+		border-radius: 4px;
+		font-size: 12px;
+		position: relative;
+		flex-shrink: 0;
+		margin-left: 4px;
+	}
+	.filter-btn:hover, .filter-btn.active {
+		background: var(--bg-tertiary);
+		color: var(--text-primary);
+	}
+	.filter-badge {
+		position: absolute;
+		top: 2px;
+		right: 2px;
+		width: 6px;
+		height: 6px;
+		background: var(--accent-blue);
+		border-radius: 50%;
+	}
+	.filter-panel {
+		padding: 8px 12px;
+		background: var(--bg-tertiary);
+		border-bottom: 1px solid var(--border);
+		display: flex;
+		flex-direction: column;
+		gap: 6px;
+	}
+	.filter-row {
+		display: flex;
+		gap: 8px;
+	}
+	.filter-label {
+		flex: 1;
+		font-size: 10px;
+		color: var(--text-muted);
+		display: flex;
+		flex-direction: column;
+		gap: 2px;
+	}
+	.filter-input {
+		width: 100%;
+		padding: 4px 6px;
+		font-size: 11px;
+		background: var(--bg-primary);
+		border: 1px solid var(--border);
+		border-radius: 3px;
+		color: var(--text-primary);
+	}
+	.filter-input:focus {
+		outline: none;
+		border-color: var(--accent-blue);
+	}
+	.filter-actions {
+		display: flex;
+		gap: 6px;
+		justify-content: flex-end;
+	}
+	.filter-apply {
+		padding: 4px 12px;
+		font-size: 11px;
+		background: var(--accent-blue);
+		color: white;
+		border: none;
+		border-radius: 3px;
+		cursor: pointer;
+	}
+	.filter-apply:disabled {
+		opacity: 0.5;
+	}
+	.bisect-bar {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		padding: 6px 12px;
+		background: rgba(88, 166, 255, 0.08);
+		border-bottom: 1px solid rgba(88, 166, 255, 0.2);
+		flex-shrink: 0;
+		font-size: 11px;
+	}
+	.bisect-icon { font-size: 14px; }
+	.bisect-text { font-weight: 600; color: var(--accent-blue); }
+	.bisect-steps { color: var(--text-muted); }
+	.bisect-found { color: var(--accent-green); font-weight: 600; }
+	.bisect-actions { margin-left: auto; display: flex; gap: 4px; }
+	.bisect-btn {
+		padding: 2px 10px;
+		font-size: 10px;
+		border: 1px solid var(--border);
+		border-radius: 3px;
+		cursor: pointer;
+		background: var(--bg-secondary);
+		color: var(--text-secondary);
+	}
+	.bisect-btn:hover { background: var(--bg-tertiary); }
+	.bisect-btn.good { color: var(--accent-green); border-color: var(--accent-green); }
+	.bisect-btn.bad { color: var(--accent-red); border-color: var(--accent-red); }
+	.bisect-btn.skip { color: var(--accent-orange); border-color: var(--accent-orange); }
+	.bisect-btn.reset { color: var(--text-muted); }
+
+	.filter-clear {
+		padding: 4px 12px;
+		font-size: 11px;
+		background: transparent;
+		color: var(--text-secondary);
+		border: 1px solid var(--border);
+		border-radius: 3px;
+		cursor: pointer;
 	}
 
 	.graph-state {
@@ -1370,6 +1664,11 @@ const virtualItems = $derived.by(() => {
 		color: var(--text-muted);
 		flex-shrink: 0;
 		white-space: nowrap;
+	}
+
+	.pill-tag {
+		font-size: 9px;
+		gap: 2px;
 	}
 
 	.message {

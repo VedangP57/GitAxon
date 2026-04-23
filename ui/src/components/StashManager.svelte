@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { get } from 'svelte/store';
-	import { currentRepo } from '$lib/store';
+	import { currentRepo, selectStash } from '$lib/store';
 	import { showToast } from '$lib/toast';
 	import {
 		listStashes,
@@ -134,6 +134,7 @@
 				<!-- svelte-ignore a11y_no_static_element_interactions -->
 				<div
 					class="stash-row"
+					onclick={() => selectStash(stash.index)}
 					oncontextmenu={(e) => {
 						e.preventDefault();
 						ctxMenu = { x: e.clientX, y: e.clientY, stash };
@@ -216,6 +217,10 @@
 		<!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
 		<div class="ctx-backdrop" onclick={() => (ctxMenu = null)}></div>
 		<div class="ctx-menu" style={`top:${ctxMenu.y}px; left:${ctxMenu.x}px`}>
+			<button class="ctx-item" onclick={() => { selectStash(ctxMenu!.stash.index); ctxMenu = null; }}>
+				Preview stash
+			</button>
+			<div class="ctx-divider"></div>
 			<button class="ctx-item" onclick={() => handlePop(ctxMenu!.stash)}>
 				↑ Pop (apply and remove)
 			</button>

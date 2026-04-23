@@ -7,7 +7,8 @@
 		currentRepo,
 		selectedCommit
 	} from '$lib/store';
-	import { discardFile, gitBlame, readDiffFileContent, type BlameLine } from '$lib/tauri';
+	import { discardFile, gitBlame, readDiffFileContent, stageHunk, unstageHunk, type BlameLine } from '$lib/tauri';
+	import { debouncedRefreshStatus } from '$lib/store';
 	import { showToast } from '$lib/toast';
 	import type { DiffFile, DiffHunk } from '$lib/types';
 	import { get } from 'svelte/store';
@@ -105,6 +106,51 @@
 			showToast(`Blame failed: ${String(e)}`, 'error');
 		} finally {
 			blameLoading = false;
+		}
+	}
+
+	/** Build a unified diff patch for a single hunk, suitable for `git apply --cached`. */
+	function buildHunkPatch(file: DiffFile, hunk: DiffHunk): string {
+		const oldPath = file.old_path ?? file.new_path ?? '';
+		const newPath = file.new_path ?? file.old_path ?? '';
+		const aPath = file.status === 'Added' ? '/dev/null' : `a/${oldPath}`;
+		const bPath = file.status === 'Deleted' ? '/dev/null' : `b/${newPath}`;
+		let patch = `diff --git a/${oldPath} b/${newPath}\n`;
+		patch += `--- ${aPath}\n`;
+		patch += `+++ ${bPath}\n`;
+		patch += `@@ -${hunk.old_start},${hunk.old_lines} +${hunk.new_start},${hunk.new_lines} @@\n`;
+		for (const line of hunk.lines) {
+			const prefix = line.line_type === 'Added' ? '+' : line.line_type === 'Deleted' ? '-' : ' ';
+			patch += `${prefix}${line.content}\n`;
+		}
+		return patch;
+	}
+
+	async function handleStageHunk(hunk: DiffHunk) {
+		const file = $diffFile;
+		const repo = $currentRepo;
+		if (!file || !repo) return;
+		try {
+			const patch = buildHunkPatch(file, hunk);
+			await stageHunk(repo, patch);
+			showToast('Hunk staged', 'success');
+			debouncedRefreshStatus();
+		} catch (e) {
+			showToast(`Stage hunk failed: ${String(e)}`, 'error');
+		}
+	}
+
+	async function handleUnstageHunk(hunk: DiffHunk) {
+		const file = $diffFile;
+		const repo = $currentRepo;
+		if (!file || !repo) return;
+		try {
+			const patch = buildHunkPatch(file, hunk);
+			await unstageHunk(repo, patch);
+			showToast('Hunk unstaged', 'success');
+			debouncedRefreshStatus();
+		} catch (e) {
+			showToast(`Unstage hunk failed: ${String(e)}`, 'error');
 		}
 	}
 
@@ -293,7 +339,11 @@
 							<td colspan="3" class="hunk-header-gutter"></td>
 							<td class="hunk-header-text">
 								<span>{hunkHeader(hunk)}</span>
-								<button class="revert-hunk-btn">Revert Hunk</button>
+								{#if $diffMode === 'working-tree'}
+									<button class="stage-hunk-btn" onclick={() => handleStageHunk(hunk)}>Stage Hunk</button>
+								{:else if $diffMode === 'staged'}
+									<button class="unstage-hunk-btn" onclick={() => handleUnstageHunk(hunk)}>Unstage Hunk</button>
+								{/if}
 							</td>
 						</tr>
 						{#each hunk.lines as line, i (`${line.old_line_no ?? 'x'}-${line.new_line_no ?? 'x'}-${line.content}-${i}`)}
@@ -681,6 +731,24 @@
 	}
 	.hunk-header-row:hover .revert-hunk-btn { opacity: 1; }
 	.revert-hunk-btn:hover { color: var(--accent-orange); border-color: var(--accent-orange); }
+
+	.stage-hunk-btn, .unstage-hunk-btn {
+		margin-left: auto;
+		padding: 1px 8px;
+		background: var(--bg-tertiary);
+		border: 1px solid var(--border);
+		border-radius: 3px;
+		color: var(--text-muted);
+		font-size: 10px;
+		font-family: -apple-system, sans-serif;
+		cursor: pointer;
+		opacity: 0;
+		transition: opacity 0.1s;
+	}
+	.hunk-header-row:hover .stage-hunk-btn,
+	.hunk-header-row:hover .unstage-hunk-btn { opacity: 1; }
+	.stage-hunk-btn:hover { color: var(--accent-green); border-color: var(--accent-green); }
+	.unstage-hunk-btn:hover { color: var(--accent-orange); border-color: var(--accent-orange); }
 
 	/* Discard button */
 	.discard-file-btn {

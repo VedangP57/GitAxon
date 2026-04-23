@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(grep -n \"catch\\\\s*\\\\\\(\\\\s*$\" /Users/sarvadhisolution/Documents/Personal/GitAxon/ui/src/components/RightPanel.svelte)",
+      "Bash(bun run:*)",
+      "Bash(ls:*)",
+      "Bash(wc -l /Users/sarvadhisolution/Documents/Personal/GitAxon/ui/src/components/*.svelte)",
+      "Bash(grep -n \"action\\\\|menu\\\\|context\" /Users/sarvadhisolution/Documents/Personal/GitAxon/ui/src/components/*.svelte)",
+      "Bash(cargo check:*)",
+      "Bash(cargo doc:*)",
+      "Bash(uvx code-review-graph:*)",
+      "Bash(open:*)",
+      "Bash(npx tsc:*)"
+    ]
+  }
+}

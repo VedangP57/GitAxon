@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
-use git2::{Repository, Status, StatusOptions};
+use git2::{Status, StatusOptions};
 use once_cell::sync::Lazy;
 
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
@@ -36,8 +36,27 @@ static PREV_STATUS: Lazy<Mutex<HashMap<String, StatusSnapshot>>> =
 static WATCHER: Mutex<Option<RecommendedWatcher>> = Mutex::new(None);
 static IS_RUNNING: AtomicBool = AtomicBool::new(false);
 
+/// Pre-compiled set of path fragments to skip in watcher events.
+/// Checked once at module load instead of per-event string matching.
+static SKIP_FRAGMENTS: Lazy<Vec<&'static str>> = Lazy::new(|| {
+    vec![
+        "node_modules", "/.git/objects/", "/.git/logs/", "/.git/gc.pid",
+        "/.next/", "/dist/", "/target/", "/.turbo/", "/__pycache__/",
+    ]
+});
+
+static SKIP_SUFFIXES: Lazy<Vec<&'static str>> = Lazy::new(|| {
+    vec![".lock", ".log", ".tmp", "~", ".swp", ".DS_Store", "4913"]
+});
+
+#[inline]
+fn should_skip_path(p: &str) -> bool {
+    SKIP_SUFFIXES.iter().any(|s| p.ends_with(s))
+        || SKIP_FRAGMENTS.iter().any(|f| p.contains(f))
+}
+
 fn compute_full_status(repo_path: &str) -> Result<Vec<FileStatus>, String> {
-    let repo = Repository::open(repo_path).map_err(|e| e.to_string())?;
+    let repo = crate::repo_pool::open_repo(repo_path).map_err(|e| e.to_string())?;
 
     let mut opts = StatusOptions::new();
     opts.include_untracked(true)
@@ -49,41 +68,66 @@ fn compute_full_status(repo_path: &str) -> Result<Vec<FileStatus>, String> {
 
     let mut results: Vec<FileStatus> = statuses
         .iter()
-        .filter_map(|e| {
+        .flat_map(|e| {
             let s = e.status();
-            let (code, staged) = if s.intersects(
-                Status::INDEX_NEW | Status::INDEX_MODIFIED | Status::INDEX_DELETED | Status::INDEX_RENAMED,
-            ) {
-                if s.contains(Status::INDEX_NEW) {
-                    ("A", true)
-                } else if s.contains(Status::INDEX_DELETED) {
-                    ("D", true)
-                } else {
-                    ("M", true)
-                }
-            } else if s.intersects(Status::WT_NEW | Status::WT_MODIFIED | Status::WT_DELETED) {
-                if s.contains(Status::WT_NEW) {
-                    ("?", false)
-                } else if s.contains(Status::WT_DELETED) {
-                    ("WD", false)
-                } else {
-                    ("WM", false)
-                }
-            } else {
-                // Skip clean entries
-                return None;
-            };
-
             let path = e.path().unwrap_or("").to_string();
             if path.is_empty() {
-                return None;
+                return vec![];
             }
 
-            Some(FileStatus {
-                path,
-                status: code.to_string(),
-                staged,
-            })
+            let mut entries = Vec::new();
+
+            // Conflicted files get a single entry
+            if s.contains(Status::CONFLICTED) {
+                entries.push(FileStatus {
+                    path,
+                    status: "U".to_string(),
+                    staged: false,
+                });
+                return entries;
+            }
+
+            // Staged (index) statuses
+            if s.intersects(
+                Status::INDEX_NEW | Status::INDEX_MODIFIED | Status::INDEX_DELETED | Status::INDEX_RENAMED | Status::INDEX_TYPECHANGE,
+            ) {
+                let code = if s.contains(Status::INDEX_NEW) {
+                    "A"
+                } else if s.contains(Status::INDEX_DELETED) {
+                    "D"
+                } else if s.contains(Status::INDEX_RENAMED) {
+                    "R"
+                } else if s.contains(Status::INDEX_TYPECHANGE) {
+                    "T"
+                } else {
+                    "M"
+                };
+                entries.push(FileStatus {
+                    path: path.clone(),
+                    status: code.to_string(),
+                    staged: true,
+                });
+            }
+
+            // Unstaged (worktree) statuses
+            if s.intersects(Status::WT_NEW | Status::WT_MODIFIED | Status::WT_DELETED | Status::WT_RENAMED | Status::WT_TYPECHANGE) {
+                let code = if s.contains(Status::WT_NEW) {
+                    "?"
+                } else if s.contains(Status::WT_DELETED) {
+                    "WD"
+                } else if s.contains(Status::WT_RENAMED) {
+                    "WR"
+                } else {
+                    "WM"
+                };
+                entries.push(FileStatus {
+                    path,
+                    status: code.to_string(),
+                    staged: false,
+                });
+            }
+
+            entries
         })
         .collect();
 
@@ -107,8 +151,8 @@ pub fn init_status(repo_path: &str) -> Result<(), String> {
 pub fn init_prev_status(repo_path: &str) -> Result<(), String> {
     let current = compute_full_status(repo_path)?;
     set_prev_status(repo_path, &current);
-    println!(
-        "[Watcher] Initialized status snapshot for {} ({} files)",
+    log::debug!(
+        "Initialized status snapshot for {} ({} files)",
         repo_path,
         current.len()
     );
@@ -127,7 +171,7 @@ pub fn get_full_status_and_sync_snapshot(repo_path: &str) -> Result<Vec<FileStat
 /// Update PREV_STATUS with the given entries. Used after get_status so the watcher
 /// has an accurate baseline for diff detection.
 fn set_prev_status(repo_path: &str, entries: &[FileStatus]) {
-    let mut all_prev = PREV_STATUS.lock().unwrap();
+    let Ok(mut all_prev) = PREV_STATUS.lock() else { return };
     let snapshot = all_prev
         .entry(repo_path.to_string())
         .or_insert_with(HashMap::new);
@@ -147,7 +191,8 @@ pub fn update_status(repo_path: &str) -> Result<StatusPatch, String> {
         current.insert(f.path.clone(), (f.status.clone(), f.staged));
     }
 
-    let mut all_prev = PREV_STATUS.lock().unwrap();
+    let mut all_prev = PREV_STATUS.lock()
+        .map_err(|_| "Failed to lock PREV_STATUS".to_string())?;
     let prev_snapshot = all_prev
         .entry(repo_path.to_string())
         .or_insert_with(HashMap::new);
@@ -206,7 +251,7 @@ fn watch_recursive_limited(
 
     let name = dir.file_name().and_then(|n| n.to_str()).unwrap_or("");
     if skip.contains(&name) {
-        println!("[Watcher] Skipping heavy dir: {:?}", dir);
+        log::debug!("Skipping heavy dir: {:?}", dir);
         return;
     }
     if name.starts_with('.') && name != ".git" {
@@ -214,9 +259,9 @@ fn watch_recursive_limited(
     }
 
     match watcher.watch(dir, RecursiveMode::NonRecursive) {
-        Ok(_) => println!("[Watcher] Watching: {:?}", dir),
+        Ok(_) => log::trace!("Watching: {:?}", dir),
         Err(e) => {
-            println!("[Watcher] FAILED to watch {:?}: {}", dir, e);
+            log::warn!("Failed to watch {:?}: {}", dir, e);
             return;
         }
     }
@@ -235,7 +280,8 @@ pub fn start_watching<F>(repo_path: &str, on_change: F) -> Result<(), String>
 where
     F: Fn() + Send + Sync + 'static,
 {
-    let mut handle = WATCHER.lock().unwrap();
+    let mut handle = WATCHER.lock()
+        .map_err(|_| "Failed to lock WATCHER".to_string())?;
     *handle = None;
     IS_RUNNING.store(false, Ordering::Relaxed);
 
@@ -249,7 +295,7 @@ where
     let real_repo_path = std::fs::canonicalize(repo_path)
         .unwrap_or_else(|_| Path::new(repo_path).to_path_buf());
     let repo_path_str = real_repo_path.to_string_lossy().to_string();
-    println!("[Watcher] Canonical path: {}", repo_path_str);
+    log::debug!("Canonical path: {}", repo_path_str);
 
     let config = Config::default().with_poll_interval(Duration::from_millis(50));
 
@@ -262,8 +308,8 @@ where
             let Ok(event) = res else { return };
 
             // LOG EVERYTHING first for diagnosis
-            println!(
-                "[Watcher] RAW event: {:?} paths: {:?}",
+            log::trace!(
+                "RAW event: {:?} paths: {:?}",
                 event.kind, event.paths
             );
 
@@ -279,23 +325,7 @@ where
             for path in &event.paths {
                 let p = path.to_string_lossy();
 
-                if p.contains("node_modules")
-                    || p.contains("/.git/objects/")
-                    || p.contains("/.git/logs/")
-                    || p.contains("/.git/gc.pid")
-                    || p.ends_with(".lock")
-                    || p.ends_with(".log")
-                    || p.ends_with(".tmp")
-                    || p.ends_with('~')
-                    || p.ends_with(".swp")
-                    || p.ends_with(".DS_Store")
-                    || p.ends_with("4913")
-                    || p.contains("/.next/")
-                    || p.contains("/dist/")
-                    || p.contains("/target/")
-                    || p.contains("/.turbo/")
-                    || p.contains("/__pycache__/")
-                {
+                if should_skip_path(&p) {
                     continue;
                 }
 
@@ -312,25 +342,25 @@ where
                 let is_worktree = !p.contains("/.git/");
 
                 if is_git_state {
-                    let mut last = last_gitstate2.lock().unwrap();
+                    let Ok(mut last) = last_gitstate2.lock() else { return };
                     // Fast feedback for index/HEAD changes; keep a tiny debounce
                     // just to coalesce rapid successive writes.
                     if last.elapsed() > Duration::from_millis(50) {
                         *last = Instant::now();
                         drop(last);
-                        println!("[Watcher] Git state change: {}", p);
+                        log::debug!("Git state change: {}", p);
                         on_change();
                     }
                     return;
                 }
 
                 if is_worktree {
-                    let mut last = last_worktree2.lock().unwrap();
+                    let Ok(mut last) = last_worktree2.lock() else { return };
                     if last.elapsed() > Duration::from_millis(50) {
                         *last = Instant::now();
                         drop(last);
 
-                        println!("[Watcher] SOURCE FILE: {}", p);
+                        log::debug!("Source file changed: {}", p);
                         on_change();
                     }
                     return;
@@ -395,19 +425,19 @@ where
     ];
 
     // Watch recursively up to depth 4, skipping heavy directories
-    println!("[Watcher] Setting up source file watching...");
+    log::debug!("Setting up source file watching...");
     watch_recursive_limited(&mut watcher, &real_repo_path, 0, 4, &skip);
-    println!("[Watcher] Source file watching setup complete");
+    log::debug!("Source file watching setup complete");
 
     *handle = Some(watcher);
     IS_RUNNING.store(true, Ordering::Relaxed);
-    println!("[Watcher] Started for {}", repo_path_str);
+    log::info!("File watcher started for {}", repo_path_str);
     Ok(())
 }
 
 pub fn stop_watching() {
     IS_RUNNING.store(false, Ordering::Relaxed);
-    let mut handle = WATCHER.lock().unwrap();
-    *handle = None;
-    println!("[Watcher] Stopped");
+    if let Ok(mut handle) = WATCHER.lock() {
+        *handle = None;
+    }
 }

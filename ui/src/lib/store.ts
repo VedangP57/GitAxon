@@ -3,6 +3,7 @@ import { listen } from '@tauri-apps/api/event';
 import {
 	getCommits,
 	getBranches,
+	getTags,
 	getStatus,
 	getDiffCommit,
 	getDiffWorkingTree,
@@ -10,9 +11,24 @@ import {
 	openRepository,
 	fetchRemote,
 	startFileWatch,
-	stopFileWatch
+	stopFileWatch,
+	listPrs,
+	listIssues,
+	detectPlatform,
+	getRepoState,
+	getGraphState,
+	stashShow,
+	getFileHistory,
+	getFileDiffAtCommit,
+	detectOperationState,
+	getBisectState,
+	startBisect as startBisectIpc,
+	bisectGood as bisectGoodIpc,
+	bisectBad as bisectBadIpc,
+	bisectSkip as bisectSkipIpc,
+	bisectReset as bisectResetIpc
 } from './tauri';
-import type { LanedCommit, BranchInfo, IndexEntry, DiffFile, StatusEntry } from './types';
+import type { LanedCommit, BranchInfo, TagInfo, IndexEntry, DiffFile, StatusEntry, PullRequest, GitIssue, RepoCoords, FileHistoryEntry, RepoOperationState, BisectState } from './types';
 
 const REPO_KEY = 'gitfast-current-repo';
 
@@ -38,6 +54,10 @@ function setStoredRepo(path: string | null): void {
 const currentRepoStore = writable<string | null>(getStoredRepo());
 const commitsStore = writable<LanedCommit[]>([]);
 const branchesStore = writable<BranchInfo[]>([]);
+const tagsStore = writable<TagInfo[]>([]);
+const prsStore = writable<PullRequest[]>([]);
+const issuesStore = writable<GitIssue[]>([]);
+const repoCoordsStore = writable<RepoCoords | null>(null);
 // Legacy status store (IndexEntry) used by parts of the UI not yet migrated.
 const legacyStatusStore = writable<IndexEntry[]>([]);
 // Fast status store powered by Rust-owned state and patches.
@@ -52,7 +72,7 @@ const errorStore = writable<string | null>(null);
 const hasMoreStore = writable<boolean>(true);
 
 // GitKraken 3-zone UI state
-export type CenterView = 'graph' | 'diff';
+export type CenterView = 'graph' | 'diff' | 'file-history' | 'conflict' | 'rebase' | 'pr-review';
 export type DiffMode = 'working-tree' | 'staged' | 'commit';
 export type RightPanelMode = 'wip' | 'commit';
 
@@ -62,6 +82,45 @@ const diffModeStore = writable<DiffMode>('commit');
 const rightPanelModeStore = writable<RightPanelMode>('wip');
 const openCreateBranchFormStore = writable<boolean>(false);
 const createBranchFromHashStore = writable<string | null>(null);
+
+// Operation state (merge/rebase/cherry-pick in progress)
+const operationStateStore = writable<RepoOperationState | null>(null);
+
+// Bisect state
+const bisectStateStore = writable<BisectState | null>(null);
+
+// PR review state
+const selectedPrStore = writable<number | null>(null); // PR number
+
+// Multi-repo tabs
+interface RepoTab {
+	path: string;
+	name: string;
+}
+const openTabsStore = writable<RepoTab[]>([]);
+const activeTabIndexStore = writable<number>(0);
+
+// File history state
+const fileHistoryStore = writable<FileHistoryEntry[]>([]);
+const fileHistoryPathStore = writable<string | null>(null);
+const fileHistoryLoadingStore = writable<boolean>(false);
+
+// ─── Commit diff cache (immutable data, safe to cache by hash) ─────
+const commitDiffCache = new Map<string, DiffFile[]>();
+const DIFF_CACHE_MAX_SIZE = 50;
+
+function getCachedDiff(hash: string): DiffFile[] | undefined {
+	return commitDiffCache.get(hash);
+}
+
+function setCachedDiff(hash: string, files: DiffFile[]): void {
+	if (commitDiffCache.size >= DIFF_CACHE_MAX_SIZE) {
+		// Evict oldest entry
+		const firstKey = commitDiffCache.keys().next().value;
+		if (firstKey) commitDiffCache.delete(firstKey);
+	}
+	commitDiffCache.set(hash, files);
+}
 
 // Guards to prevent duplicate repo loads / watchers
 let loadRepoLock = false;
@@ -74,6 +133,10 @@ let unlistenGitState: (() => void) | null = null;
 export const currentRepo = { subscribe: currentRepoStore.subscribe };
 export const commits = { subscribe: commitsStore.subscribe };
 export const branches = { subscribe: branchesStore.subscribe };
+export const tags = { subscribe: tagsStore.subscribe };
+export const prs = { subscribe: prsStore.subscribe };
+export const issues = { subscribe: issuesStore.subscribe };
+export const repoCoords = { subscribe: repoCoordsStore.subscribe };
 export const status = {
 	subscribe: statusStore.subscribe,
 	set: statusStore.set,
@@ -89,13 +152,54 @@ export const isLoading = {
 export const isDiffLoading = { subscribe: isDiffLoadingStore.subscribe };
 export const error = { subscribe: errorStore.subscribe };
 export const hasMore = { subscribe: hasMoreStore.subscribe };
-export const centerView = { subscribe: centerViewStore.subscribe };
+export const centerView = { subscribe: centerViewStore.subscribe, set: centerViewStore.set };
 export const diffFile = { subscribe: diffFileStore.subscribe };
 export const diffMode = { subscribe: diffModeStore.subscribe };
 export const rightPanelMode = { subscribe: rightPanelModeStore.subscribe };
 export const openCreateBranchForm = { subscribe: openCreateBranchFormStore.subscribe, set: openCreateBranchFormStore.set };
 export const createBranchFromHash = { subscribe: createBranchFromHashStore.subscribe, set: createBranchFromHashStore.set };
 export const isRefreshing = { subscribe: isRefreshingStore.subscribe };
+export const operationState = { subscribe: operationStateStore.subscribe };
+export const bisectState = { subscribe: bisectStateStore.subscribe };
+export const selectedPr = { subscribe: selectedPrStore.subscribe };
+export const openTabs = { subscribe: openTabsStore.subscribe };
+export const activeTabIndex = { subscribe: activeTabIndexStore.subscribe };
+export const fileHistory = { subscribe: fileHistoryStore.subscribe };
+export const fileHistoryPath = { subscribe: fileHistoryPathStore.subscribe };
+export const fileHistoryLoading = { subscribe: fileHistoryLoadingStore.subscribe };
+
+async function loadGitHubData(repoPath: string): Promise<void> {
+	try {
+		const coords = await detectPlatform(repoPath);
+		repoCoordsStore.set(coords);
+		const [prData, issueData] = await Promise.all([
+			listPrs(repoPath).catch(() => [] as PullRequest[]),
+			listIssues(repoPath).catch(() => [] as GitIssue[]),
+		]);
+		prsStore.set(prData);
+		issuesStore.set(issueData);
+	} catch {
+		// Not a GitHub/GitLab repo or no token — silently clear
+		repoCoordsStore.set(null);
+		prsStore.set([]);
+		issuesStore.set([]);
+	}
+}
+
+export async function refreshGitHub(): Promise<void> {
+	const repo = get(currentRepoStore);
+	if (repo) await loadGitHubData(repo);
+}
+
+/** Lazy-load GitHub data. Call from component onMount instead of blocking repo load. */
+export async function lazyLoadGitHub(): Promise<void> {
+	const repo = get(currentRepoStore);
+	if (!repo) return;
+	// Skip if already loaded
+	const existing = get(repoCoordsStore);
+	if (existing) return;
+	await loadGitHubData(repo);
+}
 
 export function showWip(): void {
 	selectedCommitStore.set(null);
@@ -132,16 +236,27 @@ export async function loadRepo(repoPath: string): Promise<void> {
 		currentRepoStore.set(repoPath);
 		setStoredRepo(repoPath);
 
-		const [commitsData, branchesData, statusData] = await Promise.all([
-			getCommits(repoPath, 500, 0),
-			getBranches(repoPath),
-			getStatus(repoPath)
-		]);
+		// Add to tabs if not already open
+		const tabs = get(openTabsStore);
+		const existingIdx = tabs.findIndex(t => t.path === repoPath);
+		const repoName = repoPath.split('/').pop() ?? repoPath;
+		if (existingIdx === -1) {
+			openTabsStore.set([...tabs, { path: repoPath, name: repoName }]);
+			activeTabIndexStore.set(tabs.length);
+		} else {
+			activeTabIndexStore.set(existingIdx);
+		}
 
-		commitsStore.set(commitsData);
-		branchesStore.set(branchesData);
-		statusStore.set(statusData);
+		// Single IPC call replaces 4 separate calls
+		const { commits, branches, tags, status } = await getRepoState(repoPath);
+
+		commitsStore.set(commits);
+		branchesStore.set(branches);
+		tagsStore.set(tags);
+		statusStore.set(status);
 		hasMoreStore.set(true);
+		commitDiffCache.clear();
+
 		selectedCommitStore.set(null);
 		selectedFileStore.set(null);
 		commitDiffFilesStore.set([]);
@@ -204,6 +319,8 @@ export async function refreshStatus(): Promise<void> {
 	}
 	try {
 		statusStore.set(await getStatus(repo));
+		// Also check for merge/rebase in progress
+		refreshOperationState();
 	} catch (err) {
 		errorStore.set(err instanceof Error ? err.message : String(err));
 	} finally {
@@ -248,9 +365,17 @@ export async function selectCommit(commit: LanedCommit): Promise<void> {
 	const repo = get(currentRepoStore);
 	if (!repo) return;
 
+	// Check cache first — commit diffs are immutable
+	const cached = getCachedDiff(commit.commit.hash);
+	if (cached) {
+		commitDiffFilesStore.set(cached);
+		return;
+	}
+
 	isLoadingStore.set(true);
 	try {
 		const files = await getDiffCommit(repo, commit.commit.hash);
+		setCachedDiff(commit.commit.hash, files);
 		commitDiffFilesStore.set(files);
 	} catch (err) {
 		errorStore.set(err instanceof Error ? err.message : String(err));
@@ -272,6 +397,170 @@ export function closeDiff(): void {
 	centerViewStore.set('graph');
 	diffFileStore.set(null);
 	selectedFileStore.set(null);
+}
+
+/** Preview a stash entry — loads its diff and shows it in the right panel. */
+export async function selectStash(stashIndex: number): Promise<void> {
+	const repo = get(currentRepoStore);
+	if (!repo) return;
+
+	selectedCommitStore.set(null);
+	rightPanelModeStore.set('commit');
+	isLoadingStore.set(true);
+	try {
+		const files = await stashShow(repo, stashIndex);
+		commitDiffFilesStore.set(files);
+	} catch (err) {
+		errorStore.set(err instanceof Error ? err.message : String(err));
+		commitDiffFilesStore.set([]);
+	} finally {
+		isLoadingStore.set(false);
+	}
+}
+
+/** Refresh the operation state (merge/rebase in progress?). */
+export async function refreshOperationState(): Promise<void> {
+	const repo = get(currentRepoStore);
+	if (!repo) return;
+	try {
+		const state = await detectOperationState(repo);
+		operationStateStore.set(state);
+	} catch {
+		operationStateStore.set(null);
+	}
+}
+
+/** Open a PR for review in the center panel. */
+export function openPrReview(prNumber: number): void {
+	selectedPrStore.set(prNumber);
+	centerViewStore.set('pr-review');
+}
+
+/** Switch to a tab by index. */
+export async function switchTab(index: number): Promise<void> {
+	const tabs = get(openTabsStore);
+	if (index < 0 || index >= tabs.length) return;
+	activeTabIndexStore.set(index);
+	const tab = tabs[index];
+	if (tab.path !== get(currentRepoStore)) {
+		await loadRepo(tab.path);
+	}
+}
+
+/** Close a tab by index. Switches to adjacent tab. */
+export async function closeTab(index: number): Promise<void> {
+	const tabs = get(openTabsStore);
+	if (tabs.length <= 1) return; // Don't close last tab
+	const newTabs = tabs.filter((_, i) => i !== index);
+	openTabsStore.set(newTabs);
+	const activeIdx = get(activeTabIndexStore);
+	if (index === activeIdx) {
+		const newIdx = Math.min(index, newTabs.length - 1);
+		activeTabIndexStore.set(newIdx);
+		await loadRepo(newTabs[newIdx].path);
+	} else if (index < activeIdx) {
+		activeTabIndexStore.set(activeIdx - 1);
+	}
+}
+
+/** Refresh bisect state. */
+export async function refreshBisectState(): Promise<void> {
+	const repo = get(currentRepoStore);
+	if (!repo) return;
+	try {
+		const state = await getBisectState(repo);
+		bisectStateStore.set(state.active ? state : null);
+	} catch {
+		bisectStateStore.set(null);
+	}
+}
+
+/** Start a bisect session. */
+export async function startBisect(badHash: string, goodHash: string): Promise<void> {
+	const repo = get(currentRepoStore);
+	if (!repo) return;
+	const state = await startBisectIpc(repo, badHash, goodHash);
+	bisectStateStore.set(state);
+}
+
+/** Mark current bisect commit as good. */
+export async function markBisectGood(): Promise<void> {
+	const repo = get(currentRepoStore);
+	if (!repo) return;
+	const state = await bisectGoodIpc(repo);
+	bisectStateStore.set(state);
+}
+
+/** Mark current bisect commit as bad. */
+export async function markBisectBad(): Promise<void> {
+	const repo = get(currentRepoStore);
+	if (!repo) return;
+	const state = await bisectBadIpc(repo);
+	bisectStateStore.set(state);
+}
+
+/** Skip current bisect commit. */
+export async function skipBisectCommit(): Promise<void> {
+	const repo = get(currentRepoStore);
+	if (!repo) return;
+	const state = await bisectSkipIpc(repo);
+	bisectStateStore.set(state);
+}
+
+/** End bisect session. */
+export async function resetBisect(): Promise<void> {
+	const repo = get(currentRepoStore);
+	if (!repo) return;
+	await bisectResetIpc(repo);
+	bisectStateStore.set(null);
+	await loadRepo(repo);
+}
+
+/** Open the conflict resolver for a specific file. */
+export function openConflictResolver(filePath: string): void {
+	centerViewStore.set('conflict');
+	// The ConflictResolver component will load the file via its own method
+}
+
+/** Show the commit history for a file. Opens the file-history center view. */
+export async function showFileHistory(filePath: string): Promise<void> {
+	const repo = get(currentRepoStore);
+	if (!repo) return;
+
+	fileHistoryPathStore.set(filePath);
+	fileHistoryStore.set([]);
+	fileHistoryLoadingStore.set(true);
+	centerViewStore.set('file-history');
+
+	try {
+		const entries = await getFileHistory(repo, filePath, 100);
+		fileHistoryStore.set(entries);
+	} catch (err) {
+		errorStore.set(err instanceof Error ? err.message : String(err));
+	} finally {
+		fileHistoryLoadingStore.set(false);
+	}
+}
+
+/** Load the diff for a file at a specific commit (from file history view). */
+export async function selectFileHistoryEntry(filePath: string, commitHash: string): Promise<void> {
+	const repo = get(currentRepoStore);
+	if (!repo) return;
+
+	isLoadingStore.set(true);
+	try {
+		const files = await getFileDiffAtCommit(repo, filePath, commitHash);
+		if (files.length > 0) {
+			diffFileStore.set(files[0]);
+			diffModeStore.set('commit');
+			selectedFileStore.set(files[0]);
+			centerViewStore.set('diff');
+		}
+	} catch (err) {
+		errorStore.set(err instanceof Error ? err.message : String(err));
+	} finally {
+		isLoadingStore.set(false);
+	}
 }
 
 export async function selectFileFromStaging(
@@ -327,6 +616,10 @@ export function goHome(): void {
 	setStoredRepo(null);
 	commitsStore.set([]);
 	branchesStore.set([]);
+	tagsStore.set([]);
+	prsStore.set([]);
+	issuesStore.set([]);
+	repoCoordsStore.set(null);
 	statusStore.set([]);
 	selectedCommitStore.set(null);
 	selectedFileStore.set(null);
@@ -350,12 +643,11 @@ export async function fetchFromRemote(remoteName: string = 'origin'): Promise<vo
 	errorStore.set(null);
 	try {
 		await fetchRemote(repo, remoteName);
-		const [commitsData, branchesData] = await Promise.all([
-			getCommits(repo, 500, 0),
-			getBranches(repo)
-		]);
-		commitsStore.set(commitsData);
-		branchesStore.set(branchesData);
+		// Single IPC call replaces 3 separate calls
+		const { commits, branches, tags } = await getGraphState(repo);
+		commitsStore.set(commits);
+		branchesStore.set(branches);
+		tagsStore.set(tags);
 		hasMoreStore.set(true);
 	} catch (err) {
 		errorStore.set(err instanceof Error ? err.message : String(err));
@@ -479,10 +771,12 @@ function scheduleGraphReload(repoPath: string) {
 	if (graphReloadTimer) clearTimeout(graphReloadTimer);
 	graphReloadTimer = setTimeout(async () => {
 		try {
-			const commitsData = await getCommits(repoPath, 500, 0);
-			commitsStore.set(commitsData);
-			const branchesData = await getBranches(repoPath);
-			branchesStore.set(branchesData);
+			// Single IPC call replaces 3 separate calls
+			const { commits, branches, tags } = await getGraphState(repoPath);
+			commitsStore.set(commits);
+			branchesStore.set(branches);
+			tagsStore.set(tags);
+			hasMoreStore.set(true); // Fix: reset pagination state after graph reload
 		} catch (err) {
 			errorStore.set(err instanceof Error ? err.message : String(err));
 		} finally {

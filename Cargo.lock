@@ -650,6 +650,7 @@ dependencies = [
  "dirs",
  "git2",
  "gix",
+ "log",
  "notify",
  "notify-debouncer-mini",
  "objc2",

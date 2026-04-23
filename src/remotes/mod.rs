@@ -1,6 +1,5 @@
 //! Remotes module for remote repository operations.
 
-use std::path::Path;
 use std::process::Command;
 
 use git2::Repository;
@@ -37,11 +36,7 @@ pub struct PushResult {
 }
 
 fn open_repo(repo_path: &str) -> Result<Repository, GitfastError> {
-    let path = Path::new(repo_path);
-    if !path.exists() {
-        return Err(GitfastError::RepoNotFound(repo_path.to_string()));
-    }
-    Repository::open(repo_path).map_err(|e| GitfastError::NotAGitRepo(e.to_string()))
+    crate::repo_pool::open_repo(repo_path)
 }
 
 /// Returns all configured remotes.
@@ -197,6 +192,38 @@ pub async fn push(
     })
     .await
     .map_err(|e| GitfastError::GitOperationFailed(e.to_string()))?
+}
+
+/// Add a new remote.
+pub fn add_remote(repo_path: &str, name: &str, url: &str) -> GitfastResult<()> {
+    let repo = open_repo(repo_path)?;
+    repo.remote(name, url)
+        .map_err(|e| GitfastError::GitOperationFailed(e.to_string()))?;
+    Ok(())
+}
+
+/// Remove a remote.
+pub fn remove_remote(repo_path: &str, name: &str) -> GitfastResult<()> {
+    let repo = open_repo(repo_path)?;
+    repo.remote_delete(name)
+        .map_err(|e| GitfastError::GitOperationFailed(e.to_string()))?;
+    Ok(())
+}
+
+/// Rename a remote.
+pub fn rename_remote(repo_path: &str, old_name: &str, new_name: &str) -> GitfastResult<()> {
+    let repo = open_repo(repo_path)?;
+    repo.remote_rename(old_name, new_name)
+        .map_err(|e| GitfastError::GitOperationFailed(format!("{:?}", e)))?;
+    Ok(())
+}
+
+/// Set remote URL (fetch URL).
+pub fn set_remote_url(repo_path: &str, name: &str, url: &str) -> GitfastResult<()> {
+    let repo = open_repo(repo_path)?;
+    repo.remote_set_url(name, url)
+        .map_err(|e| GitfastError::GitOperationFailed(e.to_string()))?;
+    Ok(())
 }
 
 /// Returns all remotes as a JSON string.
