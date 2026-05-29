@@ -236,33 +236,40 @@ pub fn assign_lanes(commits: Vec<CommitNode>) -> Vec<LanedCommit> {
         }
     }
 
-    // active: lane → color
-    let mut lane_active: std::collections::HashMap<usize, usize> = std::collections::HashMap::new();
+    // active: lane → color (Vec<Option<usize>> indexed by lane for O(1) access)
+    let max_lane = lane_result.iter().copied().max().unwrap_or(0);
+    let mut lane_active: Vec<Option<usize>> = vec![None; max_lane + 1];
     let mut through_lanes_per_row: Vec<Vec<[usize; 2]>> = vec![vec![]; n];
 
     for r in 0..n {
         // END events first: lanes whose last covered row is r-1 are deactivated at r
         for &lane in &end_events[r] {
-            lane_active.remove(&lane);
+            if lane < lane_active.len() {
+                lane_active[lane] = None;
+            }
         }
         // START events: lanes whose coverage begins at r
         for &[lane, color] in &start_events[r] {
-            lane_active.insert(lane, color);
+            if lane < lane_active.len() {
+                lane_active[lane] = Some(color);
+            }
         }
         // Snapshot: these lanes draw pass-through lines below row r
-        through_lanes_per_row[r] = lane_active.iter().map(|(&l, &c)| [l, c]).collect();
+        through_lanes_per_row[r] = lane_active.iter().enumerate()
+            .filter_map(|(l, c)| c.map(|color| [l, color]))
+            .collect();
     }
 
     // Build LanedCommit with edges (parents have lanes assigned)
     let mut result = Vec::with_capacity(n);
-    for i in 0..n {
+    for (i, tl) in through_lanes_per_row.into_iter().enumerate() {
         let edges = generate_edges(i, &commits, &sha_to_idx, &lane_result, &color_result);
         result.push(LanedCommit {
             commit: commits[i].clone(),
             lane: lane_result[i],
             color_index: color_result[i],
             edges,
-            through_lanes: through_lanes_per_row[i].clone(),
+            through_lanes: tl,
         });
     }
 
