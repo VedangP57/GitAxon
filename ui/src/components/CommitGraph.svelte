@@ -418,8 +418,12 @@ function drawCommitRow(i: number, rowY: number) {
 
 		const x1 = laneX(edge.from_lane);
 		const x2 = laneX(edge.to_lane);
-		const yStart = cy;
 		const yEnd = rowY + ROW_HEIGHT;
+		// If the source lane was already active above this row, start the arc from the
+		// top of the row (rowY) so the arc spans the full ROW_HEIGHT — giving a near-circular
+		// arc for adjacent lanes (22px wide : 28px tall ≈ 1:1). If the source lane is new
+		// at this row, start from cy (commit center) as before.
+		const yStart = aboveMap.has(edge.from_lane) ? rowY : cy;
 		const vSpan = yEnd - yStart;
 
 		const color = laneColorCache[edge.color_index % 8] ?? getLaneColor(edge.color_index);
@@ -428,8 +432,7 @@ function drawCommitRow(i: number, rowY: number) {
 		ctx.strokeStyle = color;
 		ctx.lineWidth = LINE_WIDTH;
 		ctx.lineCap = "round";
-		// Asymmetric cubic: stays near source lane for 70% then sweeps to destination.
-		// CP1 pulls down at x1 (keeps line vertical longer), CP2 approaches x2 from above.
+		// Asymmetric cubic bezier: vertical at source for ~70% of span, sweeps to destination.
 		ctx.moveTo(x1, yStart);
 		ctx.bezierCurveTo(x1, yStart + vSpan * 0.7, x2, yEnd - vSpan * 0.3, x2, yEnd);
 		ctx.stroke();
