@@ -43,6 +43,9 @@ pub struct LanedCommit {
     pub color_index: usize,
     /// Edges to parent commits.
     pub edges: Vec<Edge>,
+    /// Lanes that draw a vertical pass-through line below this row.
+    /// Each element is [lane_index, color_index].
+    pub through_lanes: Vec<[usize; 2]>,
 }
 
 pub fn assign_lanes(commits: Vec<CommitNode>) -> Vec<LanedCommit> {
@@ -82,6 +85,7 @@ pub fn assign_lanes(commits: Vec<CommitNode>) -> Vec<LanedCommit> {
     // Lane and color result per commit
     let mut lane_result: Vec<usize> = vec![0; n];
     let mut color_result: Vec<usize> = vec![0; n];
+    let mut next_color: usize = 0;
 
     // Process commits in row order (index 0 = newest = top)
     for i in 0..n {
@@ -157,7 +161,14 @@ pub fn assign_lanes(commits: Vec<CommitNode>) -> Vec<LanedCommit> {
 
         let col = chosen_col.unwrap();
         lane_result[i] = col;
-        color_result[i] = col % 8;
+        let color = if let Some(ci) = inherited_child {
+            color_result[ci]
+        } else {
+            let c = next_color % 8;
+            next_color += 1;
+            c
+        };
+        color_result[i] = color;
 
         // Clear other branch children slots (columns freed, don't extend their intervals)
         for &ci in &sorted_branch_children {
@@ -203,6 +214,45 @@ pub fn assign_lanes(commits: Vec<CommitNode>) -> Vec<LanedCommit> {
         }
     }
 
+    // --- Sweep-line: compute through_lanes per row ---
+    // through_lanes[i] = lanes active in the segment between row i and row i+1.
+    // Algorithm: for each edge (commit i → parent j), lane lane_result[j] is active
+    // in rows i..j (exclusive of j). Model as START at i, END at j.
+    // Sweep forward: process ENDs before STARTs at each row; snapshot active set.
+
+    let mut start_events: Vec<Vec<[usize; 2]>> = vec![vec![]; n]; // start_events[row] = vec of [lane, color]
+    let mut end_events: Vec<Vec<usize>> = vec![vec![]; n];        // end_events[row] = vec of lane
+
+    for i in 0..n {
+        for parent_hash in &commits[i].parent_hashes {
+            if let Some(&parent_idx) = sha_to_idx.get(parent_hash) {
+                if parent_idx > i {
+                    let target_lane = lane_result[parent_idx];
+                    let target_color = color_result[parent_idx];
+                    start_events[i].push([target_lane, target_color]);
+                    end_events[parent_idx].push(target_lane);
+                }
+            }
+        }
+    }
+
+    // active: lane → color
+    let mut lane_active: std::collections::HashMap<usize, usize> = std::collections::HashMap::new();
+    let mut through_lanes_per_row: Vec<Vec<[usize; 2]>> = vec![vec![]; n];
+
+    for r in 0..n {
+        // END events first: lanes whose last covered row is r-1 are deactivated at r
+        for &lane in &end_events[r] {
+            lane_active.remove(&lane);
+        }
+        // START events: lanes whose coverage begins at r
+        for &[lane, color] in &start_events[r] {
+            lane_active.insert(lane, color);
+        }
+        // Snapshot: these lanes draw pass-through lines below row r
+        through_lanes_per_row[r] = lane_active.iter().map(|(&l, &c)| [l, c]).collect();
+    }
+
     // Build LanedCommit with edges (parents have lanes assigned)
     let mut result = Vec::with_capacity(n);
     for i in 0..n {
@@ -212,6 +262,7 @@ pub fn assign_lanes(commits: Vec<CommitNode>) -> Vec<LanedCommit> {
             lane: lane_result[i],
             color_index: color_result[i],
             edges,
+            through_lanes: through_lanes_per_row[i].clone(),
         });
     }
 
