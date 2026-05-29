@@ -295,90 +295,6 @@ const branchColorMap = $derived.by(() => {
 	return map;
 });
 
-const laneFirstCommitIdx = $derived.by(() => {
-	const map = new Map<number, number>();
-	for (let i = 0; i < commitList.length; i++) {
-		const lc = commitList[i];
-		if (!map.has(lc.lane)) {
-			map.set(lc.lane, i);
-		}
-	}
-	return map;
-});
-
-const laneLastCommitIdx = $derived.by(() => {
-	const map = new Map<number, number>();
-	for (let i = commitList.length - 1; i >= 0; i--) {
-		const lc = commitList[i];
-		if (!map.has(lc.lane)) {
-			map.set(lc.lane, i);
-		}
-	}
-	return map;
-});
-
-const laneStates = $derived.by(() => {
-	const states: Map<number, number>[] = [];
-	const laneFirstSeen = new Map<number, number>();
-	for (let i = 0; i < commitList.length; i++) {
-		const lc = commitList[i];
-		if (!laneFirstSeen.has(lc.lane)) {
-			laneFirstSeen.set(lc.lane, i);
-		}
-	}
-
-	const active = new Map<number, number>();
-
-	for (let i = 0; i < commitList.length; i++) {
-		const lc = commitList[i];
-		active.set(lc.lane, lc.color_index);
-
-		for (const edge of lc.edges) {
-			if (edge.edge_type === "Straight") {
-				active.set(edge.to_lane, edge.color_index);
-			}
-			if (edge.edge_type === "Fork") {
-				active.set(edge.to_lane, edge.color_index);
-			}
-			if (edge.edge_type === "Merge") {
-				active.set(edge.to_lane, edge.color_index);
-				active.set(edge.from_lane, lc.color_index);
-			}
-		}
-
-		// Lane continues downward only on a straight first-parent edge.
-		const hasDownwardEdge = lc.edges.some(
-			(e) =>
-				e.edge_type === "Straight" &&
-				e.from_lane === lc.lane,
-		);
-		if (!hasDownwardEdge && lc.edges.length > 0) {
-			active.delete(lc.lane);
-		}
-		if (lc.edges.length === 0) {
-			active.delete(lc.lane);
-		}
-
-		// Remove lanes that have no more commits below
-		for (const [lane] of active) {
-			const lastIdx = laneLastCommitIdx.get(lane) ?? 0;
-			if (lastIdx < i) {
-				active.delete(lane);
-			}
-		}
-
-		const snapshot = new Map<number, number>();
-		for (const [lane, colorIdx] of active) {
-			const firstSeen = laneFirstSeen.get(lane) ?? i;
-			if (firstSeen <= i) {
-				snapshot.set(lane, colorIdx);
-			}
-		}
-		states.push(snapshot);
-	}
-	return states;
-});
-
 // Precompute row pixel positions: commit i is at ROW_HEIGHT + i*ROW_HEIGHT
 const rowPixelPositions = $derived.by(() => {
 	const positions: number[] = [];
@@ -428,100 +344,93 @@ function drawWipDot(scrollTop: number) {
 	ctx.setLineDash([]);
 }
 
-function drawCommitRow(
-	i: number,
-	rowY: number,
-	states: Map<number, number>[],
-	firstIdx: Map<number, number>,
-	lastIdx: Map<number, number>,
-) {
+function drawCommitRow(i: number, rowY: number) {
 	const lc = commitList[i];
 	if (!lc || !ctx) return;
 
-	const activeLanes = states[i] ?? new Map();
 	const cy = rowY + ROW_HEIGHT / 2;
 	const bgColor =
 		getComputedStyle(document.documentElement)
 			.getPropertyValue("--bg-primary")
 			.trim() || "#0d1117";
 
-	// 1. Vertical lane lines — first commit: cy to bottom, last: top to cy
-	for (const [lane, colorIdx] of activeLanes) {
-		const x = laneX(lane);
-		const color = laneColorCache[colorIdx % 8] ?? getLaneColor(colorIdx);
+	// Lanes active above this row (segment between row i-1 and row i)
+	const aboveMap = new Map<number, number>(
+		i > 0 ? (commitList[i - 1].through_lanes as [number, number][]) : [],
+	);
+	// Lanes active below this row (segment between row i and row i+1)
+	const belowMap = new Map<number, number>(lc.through_lanes as [number, number][]);
 
-		const first = firstIdx.get(lane) ?? 0;
-		const last = lastIdx.get(lane) ?? 0;
+	// All lanes that need any vertical segment at this row
+	const allLanes = new Set<number>([
+		...aboveMap.keys(),
+		...belowMap.keys(),
+		lc.lane,
+	]);
 
-		// Don't draw this lane if we're past its last commit
-		if (i > last) continue;
+	// 1. Vertical lane segments
+	for (const lane of allLanes) {
+		const hasAbove = aboveMap.has(lane);
+		const hasBelow = belowMap.has(lane);
+		const isCommitLane = lane === lc.lane;
 
-		const prevState = i > 0 ? states[i - 1] : undefined;
-		const hasIncomingFromAbove = prevState?.has(lane) ?? false;
-		const hasOutgoingBelow = i < last;
+		let y1: number, y2: number;
 
-		const y1 = hasIncomingFromAbove ? rowY : cy;
-		const y2 = hasOutgoingBelow ? rowY + ROW_HEIGHT : cy;
+		if (isCommitLane) {
+			y1 = hasAbove ? rowY : cy;
+			y2 = hasBelow ? rowY + ROW_HEIGHT : cy;
+		} else if (hasAbove && hasBelow) {
+			y1 = rowY;
+			y2 = rowY + ROW_HEIGHT;
+		} else if (hasAbove) {
+			y1 = rowY;
+			y2 = cy;
+		} else {
+			y1 = cy;
+			y2 = rowY + ROW_HEIGHT;
+		}
 
 		if (y1 >= y2) continue;
 
+		const colorIdx = belowMap.get(lane) ?? aboveMap.get(lane) ?? lc.color_index;
+		const color = laneColorCache[colorIdx % 8] ?? getLaneColor(colorIdx);
+
 		ctx.beginPath();
-		ctx.moveTo(x, y1);
-		ctx.lineTo(x, y2);
+		ctx.moveTo(laneX(lane), y1);
+		ctx.lineTo(laneX(lane), y2);
 		ctx.strokeStyle = color;
 		ctx.lineWidth = LINE_WIDTH;
 		ctx.lineCap = "round";
 		ctx.stroke();
 	}
 
-	// Root commit (last in lane, no edges): lane was removed from active, but we must
-	// draw the tail from row top to dot so the line connects from above
-	const lastForLane = lastIdx.get(lc.lane) ?? 0;
-	if (i === lastForLane && !activeLanes.has(lc.lane) && lc.edges.length === 0) {
-		const x = laneX(lc.lane);
-		const color =
-			laneColorCache[lc.color_index % 8] ?? getLaneColor(lc.color_index);
-		ctx.beginPath();
-		ctx.moveTo(x, rowY);
-		ctx.lineTo(x, cy);
-		ctx.strokeStyle = color;
-		ctx.lineWidth = LINE_WIDTH;
-		ctx.lineCap = "round";
-		ctx.stroke();
-	}
-
-	// 2. Quarter-circle arc curves (GitKraken style)
+	// 2. Arc edges — cubic S-curve bezier
 	for (const edge of lc.edges) {
 		if (edge.from_lane === edge.to_lane) continue;
-		const type = edge.edge_type;
-		if (type === "Straight") continue;
+		if (edge.edge_type === "Straight") continue;
 
 		const x1 = laneX(edge.from_lane);
 		const x2 = laneX(edge.to_lane);
-		const y2 = rowY + ROW_HEIGHT;
+		const yStart = cy;
+		const yEnd = rowY + ROW_HEIGHT;
+		const vMid = (yEnd - yStart) * 0.5;
 
-		const color =
-			laneColorCache[edge.color_index % 8] ?? getLaneColor(edge.color_index);
+		const color = laneColorCache[edge.color_index % 8] ?? getLaneColor(edge.color_index);
 
 		ctx.beginPath();
 		ctx.strokeStyle = color;
 		ctx.lineWidth = LINE_WIDTH;
 		ctx.lineCap = "round";
-
-		// Straight line down then quarter-circle arc at bottom
-		const r = Math.min(Math.abs(x2 - x1), ROW_HEIGHT * 0.4);
-		ctx.moveTo(x1, cy);
-		ctx.lineTo(x1, y2 - r);
-		ctx.quadraticCurveTo(x1, y2, x2, y2);
+		ctx.moveTo(x1, yStart);
+		ctx.bezierCurveTo(x1, yStart + vMid, x2, yEnd - vMid, x2, yEnd);
 		ctx.stroke();
 	}
 
 	// 3. Commit dot
-	const dotX = laneX(lc.lane);
-	const dotColor =
-		laneColorCache[lc.color_index % 8] ?? getLaneColor(lc.color_index);
 	const isMerge = (lc.commit.parent_hashes?.length ?? 0) > 1;
 	const dotR = isMerge ? DOT_RADIUS + 1.5 : DOT_RADIUS;
+	const dotX = laneX(lc.lane);
+	const dotColor = laneColorCache[lc.color_index % 8] ?? getLaneColor(lc.color_index);
 
 	ctx.beginPath();
 	ctx.arc(dotX, cy, dotR + 0.5, 0, Math.PI * 2);
@@ -542,7 +451,6 @@ function drawVisibleGraph() {
 	const logicalW = canvasEl.width / dpr;
 	const logicalH = canvasEl.height / dpr;
 
-	// Commit i row top = ROW_HEIGHT + i*ROW_HEIGHT. Overscan 2 rows.
 	const firstVisible = Math.max(
 		0,
 		Math.floor((scrollTop - 2 * ROW_HEIGHT) / ROW_HEIGHT),
@@ -556,19 +464,11 @@ function drawVisibleGraph() {
 
 	drawWipDot(scrollTop);
 
-	const positions = rowPixelPositions;
-	const states = laneStates;
-	const firstIdx = laneFirstCommitIdx;
-
 	for (let i = firstVisible; i <= lastVisible; i++) {
-		const absY = positions[i];
-		if (absY === undefined) continue;
-
+		const absY = ROW_HEIGHT + i * ROW_HEIGHT;
 		const rowY = absY - scrollTop;
-
 		if (rowY < -ROW_HEIGHT || rowY > logicalH + ROW_HEIGHT) continue;
-
-		drawCommitRow(i, rowY, states, firstIdx, laneLastCommitIdx);
+		drawCommitRow(i, rowY);
 	}
 }
 
