@@ -336,7 +336,7 @@ function drawWipDot(scrollTop: number) {
 	ctx.setLineDash([]);
 }
 
-function drawCommitRow(i: number, rowY: number) {
+function drawCommitRow(i: number, rowY: number, scrollTop: number, hashToRow: Map<string, number>) {
 	const lc = commitList[i];
 	if (!lc || !ctx) return;
 
@@ -411,20 +411,33 @@ function drawCommitRow(i: number, rowY: number) {
 		ctx.stroke();
 	}
 
-	// 2. Arc edges — smooth cubic bezier (GitKraken style: no right-angles)
-	for (const edge of lc.edges) {
+	// 2. Arc edges — long S-curve from source cy to parent commit cy (vscode-git-graph / GitKraken algorithm)
+	// d = ROW_HEIGHT * 0.8 is a fixed control-point offset (same ratio as vscode-git-graph: grid.y * 0.8).
+	// The arc spans the FULL distance between commits — not just half a row — giving correct aspect ratios.
+	const d = ROW_HEIGHT * 0.8;
+
+	for (let edgeIdx = 0; edgeIdx < lc.edges.length; edgeIdx++) {
+		const edge = lc.edges[edgeIdx];
 		if (edge.from_lane === edge.to_lane) continue;
 		if (edge.edge_type === "Straight") continue;
 
 		const x1 = laneX(edge.from_lane);
 		const x2 = laneX(edge.to_lane);
-		const yEnd = rowY + ROW_HEIGHT;
-		// If the source lane was already active above this row, start the arc from the
-		// top of the row (rowY) so the arc spans the full ROW_HEIGHT — giving a near-circular
-		// arc for adjacent lanes (22px wide : 28px tall ≈ 1:1). If the source lane is new
-		// at this row, start from cy (commit center) as before.
-		const yStart = aboveMap.has(edge.from_lane) ? rowY : cy;
-		const vSpan = yEnd - yStart;
+		const srcY = cy;  // arc always starts at commit center
+
+		// Find the parent commit's cy to determine arc endpoint
+		const parentHash = lc.commit.parent_hashes[edgeIdx];
+		const parentRow = parentHash ? hashToRow.get(parentHash) : undefined;
+
+		let tgtY: number;
+		if (parentRow !== undefined) {
+			// Full arc: source cy → parent cy (the correct span)
+			const parentAbsY = ROW_HEIGHT + parentRow * ROW_HEIGHT;
+			tgtY = parentAbsY + ROW_HEIGHT / 2 - scrollTop;
+		} else {
+			// Fallback when parent is outside the loaded window: arc to yEnd
+			tgtY = rowY + ROW_HEIGHT;
+		}
 
 		const color = laneColorCache[edge.color_index % 8] ?? getLaneColor(edge.color_index);
 
@@ -432,9 +445,10 @@ function drawCommitRow(i: number, rowY: number) {
 		ctx.strokeStyle = color;
 		ctx.lineWidth = LINE_WIDTH;
 		ctx.lineCap = "round";
-		// Asymmetric cubic bezier: vertical at source for ~70% of span, sweeps to destination.
-		ctx.moveTo(x1, yStart);
-		ctx.bezierCurveTo(x1, yStart + vSpan * 0.7, x2, yEnd - vSpan * 0.3, x2, yEnd);
+		// Symmetric S-curve: departs vertically from x1, arrives vertically at x2.
+		// CP1 is d px below srcY at x1; CP2 is d px above tgtY at x2.
+		ctx.moveTo(x1, srcY);
+		ctx.bezierCurveTo(x1, srcY + d, x2, tgtY - d, x2, tgtY);
 		ctx.stroke();
 	}
 
@@ -476,11 +490,17 @@ function drawVisibleGraph() {
 
 	drawWipDot(scrollTop);
 
+	// Build hash→row index map so arc drawing can find each parent commit's cy position
+	const hashToRow = new Map<string, number>();
+	for (let k = 0; k < commitList.length; k++) {
+		hashToRow.set(commitList[k].commit.hash, k);
+	}
+
 	for (let i = firstVisible; i <= lastVisible; i++) {
 		const absY = ROW_HEIGHT + i * ROW_HEIGHT;
 		const rowY = absY - scrollTop;
 		if (rowY < -ROW_HEIGHT || rowY > logicalH + ROW_HEIGHT) continue;
-		drawCommitRow(i, rowY);
+		drawCommitRow(i, rowY, scrollTop, hashToRow);
 	}
 }
 
