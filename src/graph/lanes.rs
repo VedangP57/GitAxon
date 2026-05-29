@@ -377,3 +377,104 @@ fn generate_edges(
 
     edges
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::cache::CommitNode;
+
+    fn make_commit(hash: &str, parents: &[&str]) -> CommitNode {
+        CommitNode {
+            hash: hash.to_string(),
+            short_hash: hash[..7.min(hash.len())].to_string(),
+            message: format!("commit {}", hash),
+            author_name: "test".to_string(),
+            author_email: "test@test.com".to_string(),
+            timestamp: 0,
+            parent_hashes: parents.iter().map(|s| s.to_string()).collect(),
+        }
+    }
+
+    fn through_set(laned: &[LanedCommit], row: usize) -> std::collections::HashSet<usize> {
+        laned[row].through_lanes.iter().map(|[l, _]| *l).collect()
+    }
+
+    // Test 1: linear chain A→B→C, all lane 0, through_lanes[0] and [1] should include lane 0
+    #[test]
+    fn linear_chain_through_lane_zero() {
+        // newest first: A (row 0) → B (row 1) → C (row 2, root)
+        let commits = vec![
+            make_commit("aaaaaaa", &["bbbbbbb"]),
+            make_commit("bbbbbbb", &["ccccccc"]),
+            make_commit("ccccccc", &[]),
+        ];
+        let laned = assign_lanes(commits);
+
+        assert_eq!(laned.len(), 3);
+        assert_eq!(laned[0].lane, 0);
+        assert_eq!(laned[1].lane, 0);
+        assert_eq!(laned[2].lane, 0);
+        assert!(through_set(&laned, 0).contains(&0), "row 0 through_lanes must include lane 0");
+        assert!(through_set(&laned, 1).contains(&0), "row 1 through_lanes must include lane 0");
+        assert!(laned[2].through_lanes.is_empty(), "root row 2 should have no through_lanes");
+    }
+
+    // Test 2: diamond merge — no phantom lines in the gap
+    #[test]
+    fn diamond_merge_no_phantom() {
+        // A (merge, row 0): parents [B, C]
+        // B (row 1, lane 0): parent [D]
+        // C (row 2, lane 1): parent [D]
+        // D (row 3, lane 0, root)
+        let commits = vec![
+            make_commit("aaaaaaa", &["bbbbbbb", "ccccccc"]),
+            make_commit("bbbbbbb", &["ddddddd"]),
+            make_commit("ccccccc", &["ddddddd"]),
+            make_commit("ddddddd", &[]),
+        ];
+        let laned = assign_lanes(commits);
+
+        assert_eq!(laned.len(), 4);
+
+        // row 0 (A): both lane 0 and lane 1 should be active below
+        let row0 = through_set(&laned, 0);
+        assert!(row0.contains(&0), "lane 0 (→B) active after row 0");
+        assert!(row0.contains(&1), "lane 1 (→C) active after row 0");
+
+        // row 1 (B): lane 1 (→C) should still pass through
+        let row1 = through_set(&laned, 1);
+        assert!(row1.contains(&0), "lane 0 (→D) active after row 1");
+        assert!(row1.contains(&1), "lane 1 (→C) still passing through after row 1");
+
+        // row 2 (C): only lane 0 (→D) active below
+        let row2 = through_set(&laned, 2);
+        assert!(row2.contains(&0), "lane 0 (→D) active after row 2");
+        assert!(!row2.contains(&1), "lane 1 must NOT be active after row 2");
+
+        // row 3 (D, root): no through_lanes
+        assert!(laned[3].through_lanes.is_empty(), "root D has no through_lanes");
+    }
+
+    // Test 3: lane reuse — no phantom lines between usages
+    #[test]
+    fn reused_lane_no_phantom() {
+        // Two disconnected chains: A→B→C and D→E
+        let commits = vec![
+            make_commit("aaaaaaa", &["bbbbbbb"]),
+            make_commit("bbbbbbb", &["ccccccc"]),
+            make_commit("ccccccc", &[]),
+            make_commit("ddddddd", &["eeeeeee"]),
+            make_commit("eeeeeee", &[]),
+        ];
+        let laned = assign_lanes(commits);
+
+        assert_eq!(laned.len(), 5);
+
+        assert!(through_set(&laned, 0).contains(&0), "lane 0 active after row 0");
+        assert!(through_set(&laned, 1).contains(&0), "lane 0 active after row 1");
+        assert!(!through_set(&laned, 2).contains(&0),
+            "lane 0 must NOT be active after root C at row 2 (no phantom)");
+        assert!(through_set(&laned, 3).contains(&0), "lane 0 active after row 3 (D→E)");
+        assert!(laned[4].through_lanes.is_empty(), "root E has no through_lanes");
+    }
+}
