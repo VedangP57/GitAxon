@@ -295,14 +295,6 @@ const branchColorMap = $derived.by(() => {
 	return map;
 });
 
-// Precompute row pixel positions: commit i is at ROW_HEIGHT + i*ROW_HEIGHT
-const rowPixelPositions = $derived.by(() => {
-	const positions: number[] = [];
-	for (let i = 0; i < commitList.length; i++) {
-		positions.push(ROW_HEIGHT + i * ROW_HEIGHT);
-	}
-	return positions;
-});
 
 function resizeCanvas() {
 	if (!canvasEl || !containerRef) return;
@@ -356,10 +348,10 @@ function drawCommitRow(i: number, rowY: number) {
 
 	// Lanes active above this row (segment between row i-1 and row i)
 	const aboveMap = new Map<number, number>(
-		i > 0 ? (commitList[i - 1].through_lanes as [number, number][]) : [],
+		i > 0 ? commitList[i - 1].through_lanes : [],
 	);
 	// Lanes active below this row (segment between row i and row i+1)
-	const belowMap = new Map<number, number>(lc.through_lanes as [number, number][]);
+	const belowMap = new Map<number, number>(lc.through_lanes);
 
 	// All lanes that need any vertical segment at this row
 	const allLanes = new Set<number>([
@@ -395,9 +387,10 @@ function drawCommitRow(i: number, rowY: number) {
 		const colorIdx = belowMap.get(lane) ?? aboveMap.get(lane) ?? lc.color_index;
 		const color = laneColorCache[colorIdx % 8] ?? getLaneColor(colorIdx);
 
+		const x = laneX(lane);
 		ctx.beginPath();
-		ctx.moveTo(laneX(lane), y1);
-		ctx.lineTo(laneX(lane), y2);
+		ctx.moveTo(x, y1);
+		ctx.lineTo(x, y2);
 		ctx.strokeStyle = color;
 		ctx.lineWidth = LINE_WIDTH;
 		ctx.lineCap = "round";
@@ -499,12 +492,11 @@ function handleCanvasClick(e: MouseEvent) {
 	const scrollTop = containerRef.scrollTop;
 
 	const absoluteY = mouseY + scrollTop;
-	const positions = rowPixelPositions;
 
 	for (let i = 0; i < commitList.length; i++) {
 		const lc = commitList[i];
 		const dotX = laneX(lc.lane);
-		const dotY = positions[i] + ROW_HEIGHT / 2;
+		const dotY = ROW_HEIGHT + i * ROW_HEIGHT + ROW_HEIGHT / 2;
 		const dotR = DOT_RADIUS + 4;
 
 		const dist = Math.sqrt(
