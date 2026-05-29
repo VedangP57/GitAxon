@@ -397,7 +397,7 @@ function drawCommitRow(i: number, rowY: number) {
 		ctx.stroke();
 	}
 
-	// 2. Arc edges — cubic S-curve bezier
+	// 2. Arc edges — straight down then hook curve at bottom (GitKraken style)
 	for (const edge of lc.edges) {
 		if (edge.from_lane === edge.to_lane) continue;
 		if (edge.edge_type === "Straight") continue;
@@ -406,7 +406,8 @@ function drawCommitRow(i: number, rowY: number) {
 		const x2 = laneX(edge.to_lane);
 		const yStart = cy;
 		const yEnd = rowY + ROW_HEIGHT;
-		const vMid = (yEnd - yStart) * 0.5;
+		// Curve radius: tight enough to leave a visible straight section above
+		const r = Math.min(Math.abs(x2 - x1) / 2, ROW_HEIGHT * 0.38);
 
 		const color = laneColorCache[edge.color_index % 8] ?? getLaneColor(edge.color_index);
 
@@ -414,8 +415,10 @@ function drawCommitRow(i: number, rowY: number) {
 		ctx.strokeStyle = color;
 		ctx.lineWidth = LINE_WIDTH;
 		ctx.lineCap = "round";
+		// Straight down, then hook-curve only at the very bottom of the row
 		ctx.moveTo(x1, yStart);
-		ctx.bezierCurveTo(x1, yStart + vMid, x2, yEnd - vMid, x2, yEnd);
+		ctx.lineTo(x1, yEnd - r);
+		ctx.quadraticCurveTo(x1, yEnd, x2, yEnd);
 		ctx.stroke();
 	}
 
