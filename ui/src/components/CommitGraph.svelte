@@ -353,6 +353,14 @@ function drawCommitRow(i: number, rowY: number) {
 	// Lanes active below this row (segment between row i and row i+1)
 	const belowMap = new Map<number, number>(lc.through_lanes);
 
+	// Lanes that are arc destinations at this row: they just started here via an arc
+	// and must NOT draw a vertical segment (the arc itself is the visual connection).
+	const arcDestLanes = new Set<number>(
+		lc.edges
+			.filter(e => e.from_lane !== e.to_lane && e.edge_type !== "Straight")
+			.map(e => e.to_lane)
+	);
+
 	// All lanes that need any vertical segment at this row
 	const allLanes = new Set<number>([
 		...aboveMap.keys(),
@@ -366,6 +374,10 @@ function drawCommitRow(i: number, rowY: number) {
 		const hasBelow = belowMap.has(lane);
 		const isCommitLane = lane === lc.lane;
 
+		// Arc-destination lanes: no vertical segment here — the arc provides the connection.
+		// Exception: if the lane was already active above (pass-through), draw the incoming part.
+		if (!isCommitLane && !hasAbove && arcDestLanes.has(lane)) continue;
+
 		let y1: number, y2: number;
 
 		if (isCommitLane) {
@@ -375,9 +387,11 @@ function drawCommitRow(i: number, rowY: number) {
 			y1 = rowY;
 			y2 = rowY + ROW_HEIGHT;
 		} else if (hasAbove) {
+			// Lane terminates here (arc merges it into another lane)
 			y1 = rowY;
 			y2 = cy;
 		} else {
+			// Genuinely new lane from cy (shouldn't reach here for arc dests — guarded above)
 			y1 = cy;
 			y2 = rowY + ROW_HEIGHT;
 		}
@@ -397,7 +411,7 @@ function drawCommitRow(i: number, rowY: number) {
 		ctx.stroke();
 	}
 
-	// 2. Arc edges — straight down then hook curve at bottom (GitKraken style)
+	// 2. Arc edges — straight down then hook-curve at bottom (GitKraken style)
 	for (const edge of lc.edges) {
 		if (edge.from_lane === edge.to_lane) continue;
 		if (edge.edge_type === "Straight") continue;
@@ -406,8 +420,8 @@ function drawCommitRow(i: number, rowY: number) {
 		const x2 = laneX(edge.to_lane);
 		const yStart = cy;
 		const yEnd = rowY + ROW_HEIGHT;
-		// Curve radius: tight enough to leave a visible straight section above
-		const r = Math.min(Math.abs(x2 - x1) / 2, ROW_HEIGHT * 0.38);
+		// Radius scales with lane distance but is capped so there's always a visible straight section
+		const r = Math.min(Math.abs(x2 - x1) * 0.45, ROW_HEIGHT * 0.4);
 
 		const color = laneColorCache[edge.color_index % 8] ?? getLaneColor(edge.color_index);
 
@@ -415,7 +429,7 @@ function drawCommitRow(i: number, rowY: number) {
 		ctx.strokeStyle = color;
 		ctx.lineWidth = LINE_WIDTH;
 		ctx.lineCap = "round";
-		// Straight down, then hook-curve only at the very bottom of the row
+		// Straight down from commit center, then hook-curve only at the very bottom
 		ctx.moveTo(x1, yStart);
 		ctx.lineTo(x1, yEnd - r);
 		ctx.quadraticCurveTo(x1, yEnd, x2, yEnd);
