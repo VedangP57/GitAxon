@@ -20,6 +20,8 @@ export interface LanedCommit {
 	lane: number;
 	color_index: number;
 	edges: Edge[];
+	/** Lanes with a vertical pass-through line below this row. Each element is [lane_index, color_index]. */
+	through_lanes: [number, number][];
 }
 
 export interface BranchInfo {
