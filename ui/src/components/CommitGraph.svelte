@@ -53,7 +53,7 @@ const ROW_HEIGHT = 28;
 const BRANCH_COL_WIDTH = 240;
 const BRANCH_COL_WIDTH_EXPANDED = 360;
 const GRAPH_COL_WIDTH = 160;
-const LANE_WIDTH = 22;
+const LANE_WIDTH = 16;
 const LANE_OFFSET = 30;
 const DOT_RADIUS = 3.5;
 const LINE_WIDTH = 1.5;
@@ -411,7 +411,7 @@ function drawCommitRow(i: number, rowY: number) {
 		ctx.stroke();
 	}
 
-	// 2. Arc edges — straight down then hook-curve at bottom (GitKraken style)
+	// 2. Arc edges — smooth cubic bezier (GitKraken style: no right-angles)
 	for (const edge of lc.edges) {
 		if (edge.from_lane === edge.to_lane) continue;
 		if (edge.edge_type === "Straight") continue;
@@ -420,8 +420,7 @@ function drawCommitRow(i: number, rowY: number) {
 		const x2 = laneX(edge.to_lane);
 		const yStart = cy;
 		const yEnd = rowY + ROW_HEIGHT;
-		// Radius scales with lane distance but is capped so there's always a visible straight section
-		const r = Math.min(Math.abs(x2 - x1) * 0.45, ROW_HEIGHT * 0.4);
+		const vSpan = yEnd - yStart;
 
 		const color = laneColorCache[edge.color_index % 8] ?? getLaneColor(edge.color_index);
 
@@ -429,10 +428,10 @@ function drawCommitRow(i: number, rowY: number) {
 		ctx.strokeStyle = color;
 		ctx.lineWidth = LINE_WIDTH;
 		ctx.lineCap = "round";
-		// Straight down from commit center, then hook-curve only at the very bottom
+		// Asymmetric cubic: stays near source lane for 70% then sweeps to destination.
+		// CP1 pulls down at x1 (keeps line vertical longer), CP2 approaches x2 from above.
 		ctx.moveTo(x1, yStart);
-		ctx.lineTo(x1, yEnd - r);
-		ctx.quadraticCurveTo(x1, yEnd, x2, yEnd);
+		ctx.bezierCurveTo(x1, yStart + vSpan * 0.7, x2, yEnd - vSpan * 0.3, x2, yEnd);
 		ctx.stroke();
 	}
 
