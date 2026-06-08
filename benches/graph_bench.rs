@@ -1,7 +1,7 @@
 //! Criterion benchmarks for graph, lanes, and diff operations.
 
 use criterion::{criterion_group, criterion_main, BatchSize, Criterion};
-use gitfast_core::{assign_lanes, diff, graph};
+use gitaxon::{assign_lanes, diff, graph};
 use std::hint::black_box;
 use tokio::runtime::Runtime;
 

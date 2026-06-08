@@ -1,11 +1,11 @@
 //! Gitfast-core CLI.
 
 use clap::{Parser, Subcommand};
-use gitfast_core::branches;
-use gitfast_core::diff;
-use gitfast_core::graph;
-use gitfast_core::remotes;
-use gitfast_core::staging;
+use gitaxon::branches;
+use gitaxon::diff;
+use gitaxon::graph;
+use gitaxon::remotes;
+use gitaxon::staging;
 use std::path::PathBuf;
 
 #[derive(Parser)]
@@ -22,6 +22,10 @@ enum Commands {
     Graph {
         #[arg(long, default_value = ".")]
         repo: PathBuf,
+        #[arg(long, default_value_t = 500)]
+        limit: usize,
+        #[arg(long, default_value_t = 0)]
+        offset: usize,
     },
     /// Show commit log
     Log {
@@ -90,13 +94,18 @@ enum Commands {
         #[arg(long)]
         branch: String,
     },
+    /// Check identity
+    Identity {
+        #[arg(long, default_value = ".")]
+        repo: PathBuf,
+    },
 }
 
 #[tokio::main]
 async fn main() {
     let cli = Cli::parse();
     match cli.command {
-        Commands::Graph { repo } => run_graph(repo).await,
+        Commands::Graph { repo, limit, offset } => run_graph(repo, limit, offset).await,
         Commands::Log { repo } => run_log(repo).await,
         Commands::Diff { repo, commit } => run_diff(repo, commit).await,
         Commands::Stage { repo, file, all } => run_stage(repo, file, all).await,
@@ -110,12 +119,13 @@ async fn main() {
             force,
         } => run_push(repo, remote, branch, force).await,
         Commands::Pull { repo, remote, branch } => run_pull(repo, remote, branch).await,
+        Commands::Identity { repo } => run_identity(repo).await,
     }
 }
 
-async fn run_graph(repo: PathBuf) {
+async fn run_graph(repo: PathBuf, limit: usize, offset: usize) {
     let path = repo.to_string_lossy();
-    match graph::get_laned_commits_json(path.as_ref(), 100, 0).await {
+    match graph::get_laned_commits_json(path.as_ref(), limit, offset).await {
         Ok(json) => println!("{}", json),
         Err(e) => eprintln!("Error: {}", e),
     }
@@ -123,7 +133,7 @@ async fn run_graph(repo: PathBuf) {
 
 async fn run_log(repo: PathBuf) {
     let path = repo.to_string_lossy();
-    match graph::get_commits_json(path.as_ref(), 100, 0).await {
+    match graph::get_commits_json(path.as_ref(), 500, 0).await {
         Ok(json) => println!("{}", json),
         Err(e) => eprintln!("Error: {}", e),
     }
@@ -200,5 +210,20 @@ async fn run_pull(repo: PathBuf, remote: String, branch: String) {
     match remotes::pull(path.as_ref(), &remote, &branch).await {
         Ok(msg) => println!("{}", msg),
         Err(e) => eprintln!("Error: {}", e),
+    }
+}
+
+async fn run_identity(repo: PathBuf) {
+    let path = repo.to_string_lossy();
+    let profiles = gitaxon::identity::get_ssh_profiles();
+    println!("SSH Profiles found: {}", profiles.len());
+    for p in &profiles {
+        println!("  Host: {} | Key: {} | Label: {}", 
+            p.host_alias, p.identity_file, p.label);
+    }
+
+    match gitaxon::identity::get_repo_identity(path.as_ref()) {
+        Ok(identity) => println!("Identity: {:?}", identity),
+        Err(e) => println!("Error getting identity: {}", e),
     }
 }

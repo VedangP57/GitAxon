@@ -1,7 +1,5 @@
 //! Branches module for branch management.
 
-use std::path::Path;
-
 use git2::{build::CheckoutBuilder, BranchType, MergeOptions, Repository, StatusOptions};
 use serde::{Deserialize, Serialize};
 
@@ -20,11 +18,7 @@ pub struct BranchInfo {
 }
 
 fn open_repo(repo_path: &str) -> Result<Repository, GitfastError> {
-    let path = Path::new(repo_path);
-    if !path.exists() {
-        return Err(GitfastError::RepoNotFound(repo_path.to_string()));
-    }
-    Repository::open(repo_path).map_err(|e| GitfastError::NotAGitRepo(e.to_string()))
+    crate::repo_pool::open_repo(repo_path)
 }
 
 fn branch_to_info(_repo: &Repository, branch: &git2::Branch, is_remote: bool) -> GitfastResult<BranchInfo> {
