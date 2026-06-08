@@ -229,11 +229,7 @@ pub async fn get_commits(
                 }
             }
         }
-        let mut sorted = temporal_topological_sort(commits);
-        // Ensure newest-first for lane algorithm (children must be processed before parents)
-        if !sorted.is_empty() && sorted.first().unwrap().parent_hashes.is_empty() {
-            sorted.reverse();
-        }
+        let sorted = temporal_topological_sort(commits);
         Ok::<_, GitfastError>(sorted)
     })
     .await

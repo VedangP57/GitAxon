@@ -341,12 +341,16 @@ export async function loadMoreCommits(): Promise<void> {
 	isLoadingMore = true;
 	errorStore.set(null);
 	try {
-		const more = await getCommits(repo, 500, currentCommits.length);
-		if (more.length === 0) {
+		const newLimit = currentCommits.length + 500;
+		const all = await getCommits(repo, newLimit, 0);
+		if (all.length <= currentCommits.length) {
 			hasMoreStore.set(false);
 			return;
 		}
-		commitsStore.update((c) => [...c, ...more]);
+		if (all.length < newLimit) {
+			hasMoreStore.set(false);
+		}
+		commitsStore.set(all);
 	} catch (err) {
 		errorStore.set(err instanceof Error ? err.message : String(err));
 	} finally {
