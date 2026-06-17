@@ -22,7 +22,7 @@
 	let ctxMenu = $state<{ x: number; y: number; stash: StashEntry } | null>(null);
 
 	async function loadStashes() {
-		const repo = get(currentRepo);
+		const repo = $currentRepo;
 		if (!repo) return;
 		isLoading = true;
 		try {
@@ -35,7 +35,7 @@
 	}
 
 	async function handlePush() {
-		const repo = get(currentRepo);
+		const repo = $currentRepo;
 		if (!repo) return;
 		try {
 			const msg = await stashPush(repo, stashMessage);
@@ -50,7 +50,7 @@
 
 	async function handlePop(stash: StashEntry) {
 		ctxMenu = null;
-		const repo = get(currentRepo);
+		const repo = $currentRepo;
 		if (!repo) return;
 		try {
 			const msg = await stashPop(repo, stash.index);
@@ -63,7 +63,7 @@
 
 	async function handleApply(stash: StashEntry) {
 		ctxMenu = null;
-		const repo = get(currentRepo);
+		const repo = $currentRepo;
 		if (!repo) return;
 		try {
 			const msg = await stashApply(repo, stash.index);
@@ -77,7 +77,7 @@
 	async function handleDrop(stash: StashEntry) {
 		ctxMenu = null;
 		if (!confirm(`Drop ${stash.name}? This cannot be undone.`)) return;
-		const repo = get(currentRepo);
+		const repo = $currentRepo;
 		if (!repo) return;
 		try {
 			const msg = await stashDrop(repo, stash.index);
@@ -90,7 +90,7 @@
 
 	async function handleBranch() {
 		if (!branchModalStash || !newBranchName.trim()) return;
-		const repo = get(currentRepo);
+		const repo = $currentRepo;
 		if (!repo) return;
 		try {
 			const msg = await stashBranch(repo, branchModalStash.index, newBranchName.trim());
@@ -104,7 +104,7 @@
 	}
 
 	$effect(() => {
-		if (get(currentRepo)) {
+		if ($currentRepo) {
 			loadStashes();
 		} else {
 			stashes = [];
