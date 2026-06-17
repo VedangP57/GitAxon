@@ -672,6 +672,13 @@ async fn set_remote_url(repo_path: String, name: String, url: String) -> Result<
 }
 
 #[tauri::command]
+async fn clone_repo(url: String, dest: String) -> Result<(), String> {
+    gitaxon::remotes::clone_repo(url, dest)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 async fn get_recent_repositories(limit: usize) -> Result<String, String> {
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
     let cache_dir = format!("{}/.gitfast", home);
@@ -1277,6 +1284,7 @@ pub fn run() {
             remove_remote,
             rename_remote,
             set_remote_url,
+            clone_repo,
             detect_platform,
             list_prs,
             list_issues,

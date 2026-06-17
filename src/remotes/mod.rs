@@ -241,3 +241,15 @@ pub async fn list_remotes_json(repo_path: &str) -> GitfastResult<String> {
     serde_json::to_string_pretty(&remotes)
         .map_err(|e| GitfastError::SerializationError(e.to_string()))
 }
+
+/// Clone a remote repository to a local destination path.
+pub async fn clone_repo(url: String, dest: String) -> Result<(), GitfastError> {
+    tokio::task::spawn_blocking(move || {
+        git2::build::RepoBuilder::new()
+            .clone(&url, std::path::Path::new(&dest))
+            .map(|_| ())
+            .map_err(|e| GitfastError::GitOperationFailed(e.to_string()))
+    })
+    .await
+    .map_err(|e| GitfastError::GitOperationFailed(e.to_string()))?
+}
