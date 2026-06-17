@@ -351,6 +351,7 @@
 
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div class="app-shell" class:is-resizing={resizing !== null}>
+	<TabBar />
 	<!-- ═══ TOOLBAR ═══ -->
 	<header class="toolbar">
 		<!-- Left -->
@@ -710,8 +711,6 @@
 			</div>
 		</div>
 	</header>
-
-	<TabBar />
 
 	<!-- ═══ MAIN BODY (flex row) ═══ -->
 	<div class="main-body">
