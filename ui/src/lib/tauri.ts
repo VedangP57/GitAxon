@@ -635,3 +635,7 @@ export async function getPrFiles(repoPath: string, prNumber: number): Promise<Pr
 export async function submitPrReview(repoPath: string, prNumber: number, body: string, event: string): Promise<string> {
 	return invoke<string>('submit_pr_review', { repoPath, prNumber, body, event });
 }
+
+export async function cloneRepo(url: string, dest: string): Promise<void> {
+	await invoke('clone_repo', { url, dest });
+}

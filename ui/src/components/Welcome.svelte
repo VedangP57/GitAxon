@@ -2,12 +2,13 @@
 	import { open } from "@tauri-apps/plugin-dialog";
 	import { onMount } from "svelte";
 	import { loadRepo } from "$lib/store";
-	import { getRecentRepositories } from "$lib/tauri";
+	import { getRecentRepositories, cloneRepo } from "$lib/tauri";
 	import type { RepoRecord } from "$lib/types";
 
 	let recentRepos = $state<RepoRecord[]>([]);
 	let toastMessage = $state<string | null>(null);
 	let cloneUrl = $state("");
+	let cloneLoading = $state(false);
 	let isTauri = $state(false);
 
 	onMount(() => {
@@ -48,6 +49,27 @@
 	function showComingSoon() {
 		toastMessage = "Coming soon";
 		setTimeout(() => (toastMessage = null), 2500);
+	}
+
+	async function handleClone() {
+		if (!cloneUrl.trim()) return;
+		const dest = await open({ directory: true, multiple: false, title: 'Choose destination folder' });
+		if (!dest || typeof dest !== 'string') return;
+		cloneLoading = true;
+		try {
+			const repoName = cloneUrl.split('/').pop()?.replace(/\.git$/, '') ?? 'repo';
+			const fullDest = `${dest}/${repoName}`;
+			await cloneRepo(cloneUrl, fullDest);
+			toastMessage = `Cloned to ${fullDest}`;
+			setTimeout(() => (toastMessage = null), 4000);
+			await loadRepo(fullDest);
+			cloneUrl = '';
+		} catch (e) {
+			toastMessage = String(e);
+			setTimeout(() => (toastMessage = null), 4000);
+		} finally {
+			cloneLoading = false;
+		}
 	}
 
 	function openRepo(repo: RepoRecord) {
@@ -281,9 +303,9 @@
 								>
 								Paste repo
 							</button>
-							<button class="btn-clone" onclick={showComingSoon}
-								>Clone</button
-							>
+							<button class="btn-clone" onclick={handleClone} disabled={cloneLoading}>
+								{cloneLoading ? 'Cloning...' : 'Clone'}
+							</button>
 						</div>
 					</div>
 					<div class="standout-footer">
