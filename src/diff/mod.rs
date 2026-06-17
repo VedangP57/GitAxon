@@ -278,25 +278,33 @@ pub async fn diff_working_tree(repo_path: &str) -> GitfastResult<Vec<DiffFile>> 
     let path = repo_path.to_string();
     tokio::task::spawn_blocking(move || {
         run_diff(&path, |repo| {
+            let repo_root = repo.workdir().map(|p| p.to_path_buf()).unwrap_or_default();
             let mut opts = DiffOptions::new();
             opts.include_untracked(true).recurse_untracked_dirs(true);
             let mut diff = repo
                 .diff_index_to_workdir(None, Some(&mut opts))
                 .map_err(|e| GitfastError::GitOperationFailed(e.to_string()))?;
-            let mut files = process_diff(&mut diff)?;
-            // For untracked files (hunks==0 because git has no baseline),
-            // read the file from disk and synthesise all-added hunks.
-            let repo_root = repo.workdir().map(|p| p.to_path_buf()).unwrap_or_default();
-            for f in &mut files {
-                if f.status == FileStatus::Added && f.hunks.is_empty() {
-                    if let Some(rel) = f.new_path.as_deref() {
-                        let full = repo_root.join(rel);
-                        if let Some(synthetic) = untracked_to_diff_file(rel, &full) {
-                            f.hunks = synthetic.hunks;
+
+            // process_diff uses Patch::from_diff which returns None for Delta::Untracked,
+            // so those deltas are silently dropped. Handle them here first.
+            let num_deltas = diff.deltas().count();
+            let mut untracked: Vec<DiffFile> = Vec::new();
+            for i in 0..num_deltas {
+                let delta = diff.get_delta(i).ok_or_else(|| {
+                    GitfastError::GitOperationFailed("delta index out of range".into())
+                })?;
+                if delta.status() == Delta::Untracked {
+                    if let Some(rel) = delta.new_file().path().map(|p| p.to_string_lossy().into_owned()) {
+                        let full = repo_root.join(&rel);
+                        if let Some(df) = untracked_to_diff_file(&rel, &full) {
+                            untracked.push(df);
                         }
                     }
                 }
             }
+
+            let mut files = process_diff(&mut diff)?;
+            files.extend(untracked);
             Ok(files)
         })
     })
