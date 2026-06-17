@@ -1,6 +1,6 @@
 //! Branches module for branch management.
 
-use git2::{build::CheckoutBuilder, BranchType, MergeOptions, Repository, StatusOptions};
+use git2::{build::CheckoutBuilder, BranchType, MergeOptions, Repository};
 use serde::{Deserialize, Serialize};
 
 use crate::errors::{GitfastError, GitfastResult};
@@ -167,42 +167,12 @@ pub async fn rename_branch(repo_path: &str, old_name: &str, new_name: &str) -> G
     .map_err(|e| GitfastError::GitOperationFailed(e.to_string()))?
 }
 
-/// Checks out a branch. Fails if the working tree has uncommitted changes.
+/// Checks out a branch. Lets git handle any real conflicts itself.
 pub async fn checkout_branch(repo_path: &str, name: &str) -> GitfastResult<()> {
     let path = repo_path.to_string();
     let name = name.to_string();
     tokio::task::spawn_blocking(move || {
         let repo = open_repo(&path)?;
-
-        // Check for uncommitted changes
-        let mut opts = StatusOptions::new();
-        opts.include_untracked(true)
-            .include_ignored(false)
-            .renames_from_rewrites(false);
-        let statuses = repo
-            .statuses(Some(&mut opts))
-            .map_err(|e| GitfastError::GitOperationFailed(e.to_string()))?;
-        let has_changes = statuses.iter().any(|e| {
-            let s = e.status();
-            !s.is_ignored()
-                && (s.is_wt_new()
-                    || s.is_wt_modified()
-                    || s.is_wt_deleted()
-                    || s.is_wt_typechange()
-                    || s.is_wt_renamed()
-                    || s.is_index_new()
-                    || s.is_index_modified()
-                    || s.is_index_deleted()
-                    || s.is_index_typechange()
-                    || s.is_index_renamed()
-                    || s.is_conflicted())
-        });
-        if has_changes {
-            return Err(GitfastError::GitOperationFailed(
-                "cannot checkout: working tree has uncommitted changes. Commit or stash them first."
-                    .to_string(),
-            ));
-        }
 
         let (object, reference) = repo
             .revparse_ext(&name)
@@ -211,7 +181,18 @@ pub async fn checkout_branch(repo_path: &str, name: &str) -> GitfastResult<()> {
         let target_ref = reference.as_ref().and_then(|r| r.name()).map(String::from);
 
         repo.checkout_tree(&object, Some(&mut CheckoutBuilder::new()))
-            .map_err(|e| GitfastError::GitOperationFailed(e.to_string()))?;
+            .map_err(|e| {
+                // Provide a clear message for the most common real conflict:
+                // an untracked file that would be overwritten
+                let msg = e.to_string();
+                if msg.contains("overwritten by checkout") || msg.contains("would be overwritten") {
+                    GitfastError::GitOperationFailed(
+                        format!("Cannot checkout: a local file would be overwritten. Commit or stash it first. ({})", msg)
+                    )
+                } else {
+                    GitfastError::GitOperationFailed(msg)
+                }
+            })?;
 
         if let Some(r) = target_ref {
             if r.starts_with("refs/heads/") {
