@@ -354,7 +354,55 @@ pub fn search_commits(
         });
     }
 
-    Ok(commits)
+    // H19: extend results with immediate parents of matching commits so edges connect.
+    // Parents outside the filtered set have no row in sha_to_idx, producing isolated dots.
+    let matching_hashes: std::collections::HashSet<String> =
+        commits.iter().map(|c| c.hash.clone()).collect();
+    let mut extended = commits;
+
+    // Collect parent hashes not already in results (deduplicated)
+    let missing_parents: Vec<String> = extended
+        .iter()
+        .flat_map(|c| c.parent_hashes.iter().cloned())
+        .filter(|h| !matching_hashes.contains(h))
+        .collect::<std::collections::HashSet<_>>()
+        .into_iter()
+        .collect();
+
+    // Fetch each missing parent via git log
+    for parent_hash in missing_parents {
+        let output = std::process::Command::new("git")
+            .current_dir(repo_path)
+            .args(["log", "-1", "--format=%H|%h|%s|%an|%ae|%ct|%P", &parent_hash])
+            .output();
+        if let Ok(out) = output {
+            if out.status.success() {
+                let line = String::from_utf8_lossy(&out.stdout);
+                let line = line.trim();
+                if !line.is_empty() {
+                    let parts: Vec<&str> = line.splitn(7, '|').collect();
+                    if parts.len() >= 6 {
+                        let parent_hashes_vec: Vec<String> = if parts.len() >= 7 && !parts[6].is_empty() {
+                            parts[6].split(' ').map(|s| s.to_string()).collect()
+                        } else {
+                            vec![]
+                        };
+                        extended.push(crate::cache::CommitNode {
+                            hash: parts[0].to_string(),
+                            short_hash: parts[1].to_string(),
+                            message: parts[2].to_string(),
+                            author_name: parts[3].to_string(),
+                            author_email: parts[4].to_string(),
+                            timestamp: parts[5].parse::<i64>().unwrap_or(0),
+                            parent_hashes: parent_hashes_vec,
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(extended)
 }
 
 /// Returns commits with lane assignments as pretty-printed JSON.
