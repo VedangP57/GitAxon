@@ -29,6 +29,7 @@
 		ontoHash = targetHash;
 		mode = 'setup';
 		isWorking = true;
+		todoItems = [];
 		try {
 			todoItems = await getRebaseTodoForRange(repo, targetHash);
 			if (todoItems.length === 0) {
