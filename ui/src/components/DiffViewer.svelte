@@ -18,17 +18,6 @@
 
 	let activeTab = $state<'diff' | 'file'>('diff');
 	let splitMode = $state(false);
-	let leftPane = $state<HTMLDivElement | null>(null);
-	let rightPane = $state<HTMLDivElement | null>(null);
-	let syncing = false;
-	function syncVertical(e: Event) {
-		if (syncing) return;
-		syncing = true;
-		const src = e.target as HTMLDivElement;
-		const other = src === leftPane ? rightPane : leftPane;
-		if (other) other.scrollTop = src.scrollTop;
-		syncing = false;
-	}
 
 	interface SplitRow {
 		left: DiffLine | null;
@@ -340,37 +329,40 @@
 		{:else if $diffFile.hunks.length === 0}
 			<div class="dv-empty">No changes to display</div>
 		{:else if splitMode}
-			<div class="split-container">
-				<div class="split-pane split-left" bind:this={leftPane} onscroll={syncVertical}>
-					{#each splitRows as { hunk, rows } (hunk.old_start + '-' + hunk.new_start)}
-						<div class="split-hunk-header">@@ -{hunk.old_start},{hunk.old_lines} @@</div>
-						{#each rows as row, i (i)}
-							<div class="split-row {row.left ? (row.left.line_type === 'Deleted' ? 'line-deleted' : 'line-context') : 'line-empty'}">
-								{#if row.left}
-									<span class="sp-ln">{row.left.old_line_no ?? ''}</span>
-									<span class="sp-content">{row.left.content}</span>
-								{:else}
-									<span class="sp-ln"></span><span class="sp-content sp-placeholder"></span>
-								{/if}
-							</div>
+			<div class="split-wrapper">
+				<table class="split-table">
+					<colgroup>
+						<col class="sp-col-ln" />
+						<col class="sp-col-code" />
+						<col class="sp-col-ln" />
+						<col class="sp-col-code" />
+					</colgroup>
+					<tbody>
+						{#each splitRows as { hunk, rows } (hunk.old_start + '-' + hunk.new_start)}
+							<tr class="sp-hunk">
+								<td colspan="4" class="sp-hunk-cell">{hunkHeader(hunk)}</td>
+							</tr>
+							{#each rows as row, i (i)}
+								<tr>
+									{#if row.left}
+										<td class="sp-ln {row.left.line_type === 'Deleted' ? 'sp-del-gutter' : 'sp-ctx-gutter'}">{row.left.old_line_no ?? ''}</td>
+										<td class="sp-code {row.left.line_type === 'Deleted' ? 'sp-del' : 'sp-ctx'}">{row.left.content}</td>
+									{:else}
+										<td class="sp-ln sp-empty-gutter"></td>
+										<td class="sp-code sp-empty"></td>
+									{/if}
+									{#if row.right}
+										<td class="sp-ln sp-div {row.right.line_type === 'Added' ? 'sp-add-gutter' : 'sp-ctx-gutter'}">{row.right.new_line_no ?? ''}</td>
+										<td class="sp-code {row.right.line_type === 'Added' ? 'sp-add' : 'sp-ctx'}">{row.right.content}</td>
+									{:else}
+										<td class="sp-ln sp-div sp-empty-gutter"></td>
+										<td class="sp-code sp-empty"></td>
+									{/if}
+								</tr>
+							{/each}
 						{/each}
-					{/each}
-				</div>
-				<div class="split-pane split-right" bind:this={rightPane} onscroll={syncVertical}>
-					{#each splitRows as { hunk, rows } (hunk.old_start + '-' + hunk.new_start)}
-						<div class="split-hunk-header">@@ +{hunk.new_start},{hunk.new_lines} @@</div>
-						{#each rows as row, i (i)}
-							<div class="split-row {row.right ? (row.right.line_type === 'Added' ? 'line-added' : 'line-context') : 'line-empty'}">
-								{#if row.right}
-									<span class="sp-ln">{row.right.new_line_no ?? ''}</span>
-									<span class="sp-content">{row.right.content}</span>
-								{:else}
-									<span class="sp-ln"></span><span class="sp-content sp-placeholder"></span>
-								{/if}
-							</div>
-						{/each}
-					{/each}
-				</div>
+					</tbody>
+				</table>
 			</div>
 		{:else}
 			<table class="diff-table">
@@ -768,55 +760,57 @@
 	.toolbar-btn:hover { color: var(--text-secondary); background: var(--bg-tertiary); }
 	.toolbar-btn.active { background: var(--bg-tertiary); color: var(--text-primary); border-color: var(--accent-blue); }
 
-	/* ── Split view — two independent panes, vertical scroll synced ── */
-	.split-container {
-		display: flex;
+	/* ── Split view — single 4-column table (GitHub/GitKraken style) ── */
+	.split-wrapper {
 		height: 100%;
-		overflow: hidden;
-	}
-	.split-pane {
-		flex: 1;
-		min-width: 0;
-		overflow: auto;           /* independent scrollbar per pane */
+		overflow: auto;
 		background: var(--bg-primary);
+	}
+	.split-table {
+		border-collapse: collapse;
+		min-width: 100%;
 		font-family: 'JetBrains Mono', 'Fira Code', ui-monospace, monospace;
 		font-size: 12px;
 		line-height: 20px;
 	}
-	.split-left { border-right: 1px solid var(--border); }
-	.split-hunk-header {
+	.sp-hunk-cell {
 		padding: 2px 8px;
 		background: #1c2128;
 		border-top: 1px solid var(--border);
 		border-bottom: 1px solid var(--border);
 		color: var(--text-muted);
-		font-size: 12px;
 		white-space: pre;
 	}
-	.split-row {
-		display: flex;
-		align-items: baseline;
-		background: var(--bg-primary);
-	}
-	.split-row.line-deleted { background: #4a0d0d; }
-	.split-row.line-added   { background: #0d4a23; }
-	.split-row.line-empty   { background: var(--bg-primary); border-left: 2px solid var(--border); }
+	/* Line number gutter cells */
 	.sp-ln {
-		min-width: 40px;
-		padding: 0 8px;
+		width: 1%;          /* shrink to content */
+		min-width: 44px;
+		padding: 0 6px;
 		text-align: right;
-		color: var(--text-muted);
+		white-space: nowrap;
 		user-select: none;
-		flex-shrink: 0;
-		border-right: 1px solid var(--bg-tertiary);
+		color: var(--text-muted);
+		border-right: 1px solid var(--border);
+		vertical-align: top;
 	}
-	.sp-content {
-		padding: 0 8px;
+	/* Divider between old and new sides */
+	.sp-div { border-left: 2px solid var(--border); }
+	/* Code content cells */
+	.sp-code {
+		padding: 0 10px;
 		white-space: pre;
-		color: var(--text-primary);
+		vertical-align: top;
 	}
-	.sp-placeholder { opacity: 0; }
-	.split-row.line-deleted .sp-content { color: #f85149; }
-	.split-row.line-added   .sp-content { color: #3fb950; }
-	.split-row.line-context .sp-content { color: var(--text-secondary); }
+	/* Context */
+	.sp-ctx-gutter { background: var(--bg-secondary); }
+	.sp-ctx         { color: var(--text-secondary); }
+	/* Deleted (old side) */
+	.sp-del-gutter  { background: #3d1010; color: #f47067; }
+	.sp-del         { background: #3d1010; color: #f47067; }
+	/* Added (new side) */
+	.sp-add-gutter  { background: #0d3320; color: #57ab5a; }
+	.sp-add         { background: #0d3320; color: #57ab5a; }
+	/* Empty cell — no matching line on this side */
+	.sp-empty-gutter { background: #161b22; }
+	.sp-empty        { background: #161b22; }
 </style>
