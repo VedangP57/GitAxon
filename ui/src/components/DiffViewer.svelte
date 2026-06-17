@@ -18,6 +18,17 @@
 
 	let activeTab = $state<'diff' | 'file'>('diff');
 	let splitMode = $state(false);
+	let leftPane  = $state<HTMLDivElement | null>(null);
+	let rightPane = $state<HTMLDivElement | null>(null);
+	let syncing = false;
+	function syncBoth(e: Event) {
+		if (syncing) return;
+		syncing = true;
+		const src   = e.target as HTMLDivElement;
+		const other = src === leftPane ? rightPane : leftPane;
+		if (other) { other.scrollTop = src.scrollTop; other.scrollLeft = src.scrollLeft; }
+		syncing = false;
+	}
 
 	interface SplitRow {
 		left: DiffLine | null;
@@ -329,40 +340,31 @@
 		{:else if $diffFile.hunks.length === 0}
 			<div class="dv-empty">No changes to display</div>
 		{:else if splitMode}
-			<div class="split-wrapper">
-				<table class="split-table">
-					<colgroup>
-						<col class="sp-col-ln" />
-						<col class="sp-col-code" />
-						<col class="sp-col-ln" />
-						<col class="sp-col-code" />
-					</colgroup>
-					<tbody>
-						{#each splitRows as { hunk, rows } (hunk.old_start + '-' + hunk.new_start)}
-							<tr class="sp-hunk">
-								<td colspan="4" class="sp-hunk-cell">{hunkHeader(hunk)}</td>
-							</tr>
-							{#each rows as row, i (i)}
-								<tr>
-									{#if row.left}
-										<td class="sp-ln {row.left.line_type === 'Deleted' ? 'sp-del-gutter' : 'sp-ctx-gutter'}">{row.left.old_line_no ?? ''}</td>
-										<td class="sp-code {row.left.line_type === 'Deleted' ? 'sp-del' : 'sp-ctx'}">{row.left.content}</td>
-									{:else}
-										<td class="sp-ln sp-empty-gutter"></td>
-										<td class="sp-code sp-empty"></td>
-									{/if}
-									{#if row.right}
-										<td class="sp-ln sp-div {row.right.line_type === 'Added' ? 'sp-add-gutter' : 'sp-ctx-gutter'}">{row.right.new_line_no ?? ''}</td>
-										<td class="sp-code {row.right.line_type === 'Added' ? 'sp-add' : 'sp-ctx'}">{row.right.content}</td>
-									{:else}
-										<td class="sp-ln sp-div sp-empty-gutter"></td>
-										<td class="sp-code sp-empty"></td>
-									{/if}
-								</tr>
-							{/each}
+			<div class="split-container">
+				<!-- OLD (left) pane -->
+				<div class="split-pane split-left" bind:this={leftPane} onscroll={syncBoth}>
+					{#each splitRows as { hunk, rows } (hunk.old_start + '-' + hunk.new_start)}
+						<div class="sp-hunk">{hunkHeader(hunk)}</div>
+						{#each rows as row, i (i)}
+							<div class="sp-row {row.left ? (row.left.line_type === 'Deleted' ? 'sp-del' : 'sp-ctx') : 'sp-empty'}">
+								<span class="sp-ln">{row.left?.old_line_no ?? ''}</span>
+								<span class="sp-code">{row.left?.content ?? ''}</span>
+							</div>
 						{/each}
-					</tbody>
-				</table>
+					{/each}
+				</div>
+				<!-- NEW (right) pane -->
+				<div class="split-pane split-right" bind:this={rightPane} onscroll={syncBoth}>
+					{#each splitRows as { hunk, rows } (hunk.old_start + '-' + hunk.new_start)}
+						<div class="sp-hunk">{hunkHeader(hunk)}</div>
+						{#each rows as row, i (i)}
+							<div class="sp-row {row.right ? (row.right.line_type === 'Added' ? 'sp-add' : 'sp-ctx') : 'sp-empty'}">
+								<span class="sp-ln">{row.right?.new_line_no ?? ''}</span>
+								<span class="sp-code">{row.right?.content ?? ''}</span>
+							</div>
+						{/each}
+					{/each}
+				</div>
 			</div>
 		{:else}
 			<table class="diff-table">
@@ -760,60 +762,69 @@
 	.toolbar-btn:hover { color: var(--text-secondary); background: var(--bg-tertiary); }
 	.toolbar-btn.active { background: var(--bg-tertiary); color: var(--text-primary); border-color: var(--accent-blue); }
 
-	/* ── Split view — single 4-column table (GitHub/GitKraken style) ── */
-	.split-wrapper {
+	/* ── Split view — two synced panes (GitKraken style) ── */
+	.split-container {
+		display: flex;
 		height: 100%;
+		overflow: hidden;
+	}
+	.split-pane {
+		flex: 1;
+		min-width: 0;
 		overflow: auto;
-		background: var(--bg-primary);
 		font-family: 'JetBrains Mono', 'Fira Code', ui-monospace, monospace;
 		font-size: 12px;
 		line-height: 20px;
+		background: var(--bg-primary);
 	}
-	/* Tables don't inherit font in browsers — force it */
-	.split-table {
-		font: inherit;
-		border-collapse: collapse;
-		min-width: 100%;
-	}
-	.split-table td { font: inherit; }
-	.sp-hunk-cell {
-		padding: 2px 8px;
+	.split-left { border-right: 2px solid var(--border); }
+	/* Hunk header */
+	.sp-hunk {
+		padding: 2px 10px;
 		background: #1c2128;
 		border-top: 1px solid var(--border);
 		border-bottom: 1px solid var(--border);
 		color: var(--text-muted);
 		white-space: pre;
+		font-size: 11px;
 	}
-	/* Line number gutter cells */
+	/* Each display row */
+	.sp-row {
+		display: flex;
+		align-items: stretch;
+		min-height: 20px;
+	}
+	/* Line number gutter */
 	.sp-ln {
-		width: 1%;          /* shrink to content */
+		flex-shrink: 0;
 		min-width: 44px;
-		padding: 0 6px;
+		padding: 0 8px;
 		text-align: right;
-		white-space: nowrap;
-		user-select: none;
 		color: var(--text-muted);
+		user-select: none;
 		border-right: 1px solid var(--border);
-		vertical-align: top;
+		background: var(--bg-secondary);
+		font-size: 11px;
 	}
-	/* Divider between old and new sides */
-	.sp-div { border-left: 2px solid var(--border); }
-	/* Code content cells */
+	/* Code content */
 	.sp-code {
+		flex: 1;
 		padding: 0 10px;
 		white-space: pre;
-		vertical-align: top;
+		color: var(--text-primary);
 	}
-	/* Context */
-	.sp-ctx-gutter { background: var(--bg-secondary); }
-	.sp-ctx         { color: var(--text-secondary); }
-	/* Deleted (old side) */
-	.sp-del-gutter  { background: #3d1010; color: #f47067; }
-	.sp-del         { background: #3d1010; color: #f47067; }
-	/* Added (new side) */
-	.sp-add-gutter  { background: #0d3320; color: #57ab5a; }
-	.sp-add         { background: #0d3320; color: #57ab5a; }
-	/* Empty cell — no matching line on this side */
-	.sp-empty-gutter { background: #161b22; }
-	.sp-empty        { background: #161b22; }
+	/* Context row */
+	.sp-ctx .sp-code { color: var(--text-secondary); }
+	/* Deleted row (left pane) */
+	.sp-del              { background: #3d1010; }
+	.sp-del .sp-ln       { background: #3d1010; color: #f47067; border-right-color: #6b2020; }
+	.sp-del .sp-code     { color: #f47067; }
+	/* Added row (right pane) */
+	.sp-add              { background: #0d3320; }
+	.sp-add .sp-ln       { background: #0d3320; color: #57ab5a; border-right-color: #1a4d2e; }
+	.sp-add .sp-code     { color: #57ab5a; }
+	/* Empty placeholder row (no matching line on this side) */
+	.sp-empty            { background: #161b22; }
+	.sp-empty .sp-ln     { background: #161b22; border-right-color: #1e2530; }
+	.sp-empty .sp-code   { color: transparent; user-select: none; }
 </style>
