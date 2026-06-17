@@ -18,6 +18,17 @@
 
 	let activeTab = $state<'diff' | 'file'>('diff');
 	let splitMode = $state(false);
+	let leftPane = $state<HTMLDivElement | null>(null);
+	let rightPane = $state<HTMLDivElement | null>(null);
+	let syncing = false;
+	function syncVertical(e: Event) {
+		if (syncing) return;
+		syncing = true;
+		const src = e.target as HTMLDivElement;
+		const other = src === leftPane ? rightPane : leftPane;
+		if (other) other.scrollTop = src.scrollTop;
+		syncing = false;
+	}
 
 	interface SplitRow {
 		left: DiffLine | null;
@@ -329,28 +340,37 @@
 		{:else if $diffFile.hunks.length === 0}
 			<div class="dv-empty">No changes to display</div>
 		{:else if splitMode}
-			<div class="split-grid">
-				{#each splitRows as { hunk, rows } (hunk.old_start + '-' + hunk.new_start)}
-					<div class="split-hunk-header">@@ -{hunk.old_start},{hunk.old_lines} +{hunk.new_start},{hunk.new_lines} @@</div>
-					{#each rows as row, i (i)}
-						<div class="split-cell {row.left ? (row.left.line_type === 'Deleted' ? 'line-deleted' : 'line-context') : 'line-empty'}">
-							{#if row.left}
-								<span class="sp-ln">{row.left.old_line_no ?? ''}</span>
-								<span class="sp-content">{row.left.content}</span>
-							{:else}
-								<span class="sp-ln"></span><span class="sp-content"></span>
-							{/if}
-						</div>
-						<div class="split-cell {row.right ? (row.right.line_type === 'Added' ? 'line-added' : 'line-context') : 'line-empty'}">
-							{#if row.right}
-								<span class="sp-ln">{row.right.new_line_no ?? ''}</span>
-								<span class="sp-content">{row.right.content}</span>
-							{:else}
-								<span class="sp-ln"></span><span class="sp-content"></span>
-							{/if}
-						</div>
+			<div class="split-container">
+				<div class="split-pane split-left" bind:this={leftPane} onscroll={syncVertical}>
+					{#each splitRows as { hunk, rows } (hunk.old_start + '-' + hunk.new_start)}
+						<div class="split-hunk-header">@@ -{hunk.old_start},{hunk.old_lines} @@</div>
+						{#each rows as row, i (i)}
+							<div class="split-row {row.left ? (row.left.line_type === 'Deleted' ? 'line-deleted' : 'line-context') : 'line-empty'}">
+								{#if row.left}
+									<span class="sp-ln">{row.left.old_line_no ?? ''}</span>
+									<span class="sp-content">{row.left.content}</span>
+								{:else}
+									<span class="sp-ln"></span><span class="sp-content sp-placeholder"></span>
+								{/if}
+							</div>
+						{/each}
 					{/each}
-				{/each}
+				</div>
+				<div class="split-pane split-right" bind:this={rightPane} onscroll={syncVertical}>
+					{#each splitRows as { hunk, rows } (hunk.old_start + '-' + hunk.new_start)}
+						<div class="split-hunk-header">@@ +{hunk.new_start},{hunk.new_lines} @@</div>
+						{#each rows as row, i (i)}
+							<div class="split-row {row.right ? (row.right.line_type === 'Added' ? 'line-added' : 'line-context') : 'line-empty'}">
+								{#if row.right}
+									<span class="sp-ln">{row.right.new_line_no ?? ''}</span>
+									<span class="sp-content">{row.right.content}</span>
+								{:else}
+									<span class="sp-ln"></span><span class="sp-content sp-placeholder"></span>
+								{/if}
+							</div>
+						{/each}
+					{/each}
+				</div>
 			</div>
 		{:else}
 			<table class="diff-table">
@@ -748,18 +768,22 @@
 	.toolbar-btn:hover { color: var(--text-secondary); background: var(--bg-tertiary); }
 	.toolbar-btn.active { background: var(--bg-tertiary); color: var(--text-primary); border-color: var(--accent-blue); }
 
-	/* ── Split view (CSS grid — single scroll container, aligned rows) ── */
-	.split-grid {
-		display: grid;
-		grid-template-columns: 1fr 1fr;
-		overflow: auto;
+	/* ── Split view — two independent panes, vertical scroll synced ── */
+	.split-container {
+		display: flex;
 		height: 100%;
+		overflow: hidden;
+	}
+	.split-pane {
+		flex: 1;
+		min-width: 0;
+		overflow: auto;           /* independent scrollbar per pane */
 		font-family: 'JetBrains Mono', 'Fira Code', ui-monospace, monospace;
 		font-size: 12px;
 		line-height: 20px;
 	}
+	.split-left { border-right: 1px solid var(--border); }
 	.split-hunk-header {
-		grid-column: 1 / -1;
 		padding: 2px 8px;
 		background: #1c2128;
 		border-top: 1px solid var(--border);
@@ -768,17 +792,14 @@
 		font-size: 12px;
 		white-space: pre;
 	}
-	.split-cell {
+	.split-row {
 		display: flex;
 		align-items: baseline;
-		min-width: 0;
-		border-right: 1px solid var(--border);
 	}
-	.split-cell:nth-child(even) { border-right: none; }
-	.split-cell.line-deleted { background: #4a0d0d; }
-	.split-cell.line-added   { background: #0d4a23; }
-	.split-cell.line-context { background: transparent; }
-	.split-cell.line-empty   { background: var(--bg-secondary); opacity: 0.5; }
+	.split-row.line-deleted { background: #4a0d0d; }
+	.split-row.line-added   { background: #0d4a23; }
+	.split-row.line-context { background: transparent; }
+	.split-row.line-empty   { background: var(--bg-secondary); opacity: 0.4; }
 	.sp-ln {
 		min-width: 40px;
 		padding: 0 8px;
@@ -793,7 +814,8 @@
 		white-space: pre;
 		color: var(--text-primary);
 	}
-	.split-cell.line-deleted .sp-content { color: #f85149; }
-	.split-cell.line-added   .sp-content { color: #3fb950; }
-	.split-cell.line-context .sp-content { color: var(--text-secondary); }
+	.sp-placeholder { opacity: 0; }
+	.split-row.line-deleted .sp-content { color: #f85149; }
+	.split-row.line-added   .sp-content { color: #3fb950; }
+	.split-row.line-context .sp-content { color: var(--text-secondary); }
 </style>
