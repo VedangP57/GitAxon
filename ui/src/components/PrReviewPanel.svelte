@@ -12,6 +12,7 @@
 	let isLoading = $state(false);
 	let reviewBody = $state('');
 	let selectedFile = $state<PrFile | null>(null);
+	let loadSeq = 0;
 
 	$effect(() => {
 		const unsub = selectedPr.subscribe(async (num) => {
@@ -22,6 +23,13 @@
 	});
 
 	async function loadPrData(num: number) {
+		const seq = ++loadSeq;
+
+		// H3: reset stale file immediately before any async work
+		selectedFile = null;
+		files = [];
+		comments = [];
+
 		const repo = get(currentRepo);
 		if (!repo) return;
 
@@ -35,12 +43,15 @@
 				getPrFiles(repo, num),
 				getPrComments(repo, num),
 			]);
+			// H4: discard result if a newer call has already started
+			if (seq !== loadSeq) return;
 			files = f;
 			comments = c;
 		} catch (e) {
+			if (seq !== loadSeq) return;
 			showToast(String(e), 'error');
 		} finally {
-			isLoading = false;
+			if (seq === loadSeq) isLoading = false;
 		}
 	}
 
