@@ -869,13 +869,13 @@
 		</div>
 	{/if}
 
-	<svelte:window onkeydown={handleGlobalKey} />
-	{#if paletteOpen}
-		<CommandPalette onclose={() => (paletteOpen = false)} />
-	{/if}
-
 	<Toast />
 </div>
+
+<svelte:window onkeydown={handleGlobalKey} />
+{#if paletteOpen}
+	<CommandPalette onclose={() => (paletteOpen = false)} />
+{/if}
 
 <style>
 	.app-shell {
