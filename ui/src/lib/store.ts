@@ -344,15 +344,17 @@ export async function loadMoreCommits(): Promise<void> {
 	errorStore.set(null);
 	try {
 		const newLimit = currentCommits.length + 500;
-		const all = await getCommits(repo, newLimit, 0);
-		if (all.length <= currentCommits.length) {
+		const { commits, branches, tags } = await getGraphState(repo, newLimit);
+		if (commits.length <= currentCommits.length) {
 			hasMoreStore.set(false);
 			return;
 		}
-		if (all.length < newLimit) {
+		if (commits.length < newLimit) {
 			hasMoreStore.set(false);
 		}
-		commitsStore.set(all);
+		commitsStore.set(commits);
+		branchesStore.set(branches);
+		tagsStore.set(tags);
 	} catch (err) {
 		errorStore.set(err instanceof Error ? err.message : String(err));
 	} finally {
@@ -778,7 +780,9 @@ function scheduleGraphReload(repoPath: string) {
 	graphReloadTimer = setTimeout(async () => {
 		try {
 			// Single IPC call replaces 3 separate calls
-			const { commits, branches, tags } = await getGraphState(repoPath);
+			const currentLen = get(commitsStore).length;
+			const limit = Math.max(500, currentLen + 100); // always load at least 500; keep all currently loaded + 100 more
+			const { commits, branches, tags } = await getGraphState(repoPath, limit);
 			commitsStore.set(commits);
 			branchesStore.set(branches);
 			tagsStore.set(tags);

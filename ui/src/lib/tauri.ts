@@ -440,13 +440,13 @@ export async function switchRepoIdentity(
 // ─── Batch commands (fewer IPC round-trips) ────────────────────────
 
 /** Single IPC call to load all repo data. Replaces getCommits+getBranches+getTags+getStatus. */
-export async function getRepoState(repoPath: string): Promise<{
+export async function getRepoState(repoPath: string, limit?: number): Promise<{
 	commits: LanedCommit[];
 	branches: BranchInfo[];
 	tags: TagInfo[];
 	status: StatusEntry[];
 }> {
-	const raw = await invoke<RepoStateResponse>('get_repo_state', { repoPath });
+	const raw = await invoke<RepoStateResponse>('get_repo_state', { repoPath, limit });
 	return {
 		commits: JSON.parse(raw.commits) as LanedCommit[],
 		branches: JSON.parse(raw.branches) as BranchInfo[],
@@ -456,12 +456,12 @@ export async function getRepoState(repoPath: string): Promise<{
 }
 
 /** Single IPC call to reload graph after git events. Replaces getCommits+getBranches+getTags. */
-export async function getGraphState(repoPath: string): Promise<{
+export async function getGraphState(repoPath: string, limit?: number): Promise<{
 	commits: LanedCommit[];
 	branches: BranchInfo[];
 	tags: TagInfo[];
 }> {
-	const raw = await invoke<GraphStateResponse>('get_graph_state', { repoPath });
+	const raw = await invoke<GraphStateResponse>('get_graph_state', { repoPath, limit });
 	return {
 		commits: JSON.parse(raw.commits) as LanedCommit[],
 		branches: JSON.parse(raw.branches) as BranchInfo[],
