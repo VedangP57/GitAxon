@@ -174,7 +174,7 @@
 
 	{#if showPushModal}
 		<div class="modal-overlay" role="none" onclick={() => (showPushModal = false)}>
-			<div class="modal" role="dialog" onclick={(e) => e.stopPropagation()}>
+			<div class="modal" role="dialog" aria-modal="true" tabindex="-1" onclick={(e) => e.stopPropagation()} onkeydown={(e) => e.stopPropagation()}>
 				<h3>Create Stash</h3>
 				<input
 					class="modal-input"
@@ -193,7 +193,7 @@
 
 	{#if branchModalStash}
 		<div class="modal-overlay" role="none" onclick={() => (branchModalStash = null)}>
-			<div class="modal" role="dialog" onclick={(e) => e.stopPropagation()}>
+			<div class="modal" role="dialog" aria-modal="true" tabindex="-1" onclick={(e) => e.stopPropagation()} onkeydown={(e) => e.stopPropagation()}>
 				<h3>Create Branch from Stash</h3>
 				<p class="modal-sub">{branchModalStash.name}</p>
 				<input
