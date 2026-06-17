@@ -6,8 +6,15 @@ on:
       - 'v*'
 
 jobs:
-  build-macos:
-    runs-on: macos-latest
+  build:
+    strategy:
+      matrix:
+        include:
+          - runner: macos-latest
+            arch: aarch64
+          - runner: macos-13
+            arch: x86_64
+    runs-on: ${{ matrix.runner }}
     permissions:
       contents: write
 
@@ -16,8 +23,6 @@ jobs:
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: aarch64-apple-darwin,x86_64-apple-darwin
 
       - name: Cache Rust
         uses: Swatinem/rust-cache@v2
@@ -30,7 +35,7 @@ jobs:
       - name: Install frontend deps
         run: cd ui && bun install
 
-      - name: Build and publish release (universal)
+      - name: Build and upload to release
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -40,29 +45,35 @@ jobs:
           releaseName: GitAxon ${{ github.ref_name }}
           releaseDraft: false
           prerelease: false
-          args: --target universal-apple-darwin
 
-      - name: Get version and SHA256
-        id: info
-        run: |
-          VERSION="${GITHUB_REF_NAME#v}"
-          DMG="src-tauri/target/universal-apple-darwin/release/bundle/dmg/GitAxon_${VERSION}_universal.dmg"
-          echo "VERSION=${VERSION}" >> $GITHUB_OUTPUT
-          echo "SHA=$(shasum -a 256 "$DMG" | awk '{print $1}')" >> $GITHUB_OUTPUT
-
-      - name: Update Homebrew tap
+  update-homebrew:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Update Homebrew tap with both arch SHAs
         env:
           TAP_TOKEN: ${{ secrets.TAP_TOKEN }}
-          VERSION: ${{ steps.info.outputs.VERSION }}
-          SHA256: ${{ steps.info.outputs.SHA }}
         run: |
+          TAG="${GITHUB_REF_NAME}"
+          VERSION="${TAG#v}"
+
+          curl -fL -o arm.dmg "https://github.com/VedangP57/GitAxon/releases/download/${TAG}/GitAxon_${VERSION}_aarch64.dmg"
+          curl -fL -o intel.dmg "https://github.com/VedangP57/GitAxon/releases/download/${TAG}/GitAxon_${VERSION}_x64.dmg"
+
+          SHA_ARM=$(sha256sum arm.dmg | awk '{print $1}')
+          SHA_INTEL=$(sha256sum intel.dmg | awk '{print $1}')
+
           git clone https://x-access-token:${TAP_TOKEN}@github.com/VedangP57/homebrew-tap.git /tmp/tap
+
           cat > /tmp/tap/Casks/gitaxon.rb << EOF
           cask "gitaxon" do
-            version "${VERSION}"
-            sha256 "${SHA256}"
+            arch arm: "aarch64", intel: "x64"
 
-            url "https://github.com/VedangP57/GitAxon/releases/download/v${VERSION}/GitAxon_${VERSION}_universal.dmg"
+            version "${VERSION}"
+            sha256 arm:   "${SHA_ARM}",
+                   intel: "${SHA_INTEL}"
+
+            url "https://github.com/VedangP57/GitAxon/releases/download/v#{version}/GitAxon_#{version}_#{arch}.dmg"
             name "GitAxon"
             desc "Fast desktop Git GUI — commit graph, multi-repo tabs, conflict resolver"
             homepage "https://github.com/VedangP57/GitAxon"
@@ -81,6 +92,7 @@ jobs:
             EOS
           end
           EOF
+
           cd /tmp/tap
           git config user.email "actions@github.com"
           git config user.name "GitHub Actions"
