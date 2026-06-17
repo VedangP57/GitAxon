@@ -1,5 +1,6 @@
 <script lang="ts">
-	import { openTabs, activeTabIndex, switchTab, closeTab } from '$lib/store';
+	import { openTabs, activeTabIndex, switchTab, closeTab, loadRepo } from '$lib/store';
+	import { open } from '@tauri-apps/plugin-dialog';
 
 	let tabs = $state<{ path: string; name: string }[]>([]);
 	let activeIdx = $state(0);
@@ -9,33 +10,42 @@
 		const unsub2 = activeTabIndex.subscribe((v) => (activeIdx = v));
 		return () => { unsub1(); unsub2(); };
 	});
+
+	async function openNewRepo() {
+		try {
+			const selected = await open({ directory: true, multiple: false });
+			if (selected && typeof selected === 'string') {
+				await loadRepo(selected);
+			}
+		} catch {
+			// silently ignore dialog cancel
+		}
+	}
 </script>
 
-{#if tabs.length > 1}
-	<div class="tab-bar">
-		{#each tabs as tab, i (tab.path)}
-			<!-- svelte-ignore a11y_no_static_element_interactions -->
-			<div
-				class="tab"
-				class:active={i === activeIdx}
-				onclick={() => switchTab(i)}
-				onkeydown={(e) => e.key === 'Enter' && switchTab(i)}
-				role="tab"
-				tabindex="0"
-				title={tab.path}
-			>
-				<span class="tab-name">{tab.name}</span>
+<div class="tab-bar">
+	{#each tabs as tab, i (tab.path)}
+		<div
+			class="tab"
+			class:active={i === activeIdx}
+			onclick={() => switchTab(i)}
+			onkeydown={(e) => e.key === 'Enter' && switchTab(i)}
+			role="tab"
+			tabindex="0"
+			title={tab.path}
+		>
+			<span class="tab-name">{tab.name}</span>
+			{#if tabs.length > 1}
 				<button
 					class="tab-close"
 					onclick={(e) => { e.stopPropagation(); closeTab(i); }}
 					title="Close tab"
-				>
-					×
-				</button>
-			</div>
-		{/each}
-	</div>
-{/if}
+				>×</button>
+			{/if}
+		</div>
+	{/each}
+	<button class="tab-add" onclick={openNewRepo} title="Open repository">+</button>
+</div>
 
 <style>
 	.tab-bar {
@@ -109,5 +119,26 @@
 	.tab-close:hover {
 		background: var(--bg-tertiary);
 		color: var(--accent-red);
+	}
+
+	.tab-add {
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		width: 30px;
+		height: 100%;
+		border: none;
+		border-right: 1px solid var(--border);
+		background: transparent;
+		color: var(--text-muted);
+		cursor: pointer;
+		font-size: 16px;
+		flex-shrink: 0;
+		transition: background 0.1s, color 0.1s;
+	}
+
+	.tab-add:hover {
+		background: var(--bg-secondary);
+		color: var(--text-primary);
 	}
 </style>
