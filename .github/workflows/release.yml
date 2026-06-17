@@ -7,14 +7,7 @@ on:
 
 jobs:
   build:
-    strategy:
-      matrix:
-        include:
-          - runner: macos-latest
-            arch: aarch64
-          - runner: macos-13
-            arch: x86_64
-    runs-on: ${{ matrix.runner }}
+    runs-on: macos-latest
     permissions:
       contents: write
 
@@ -50,30 +43,24 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - name: Update Homebrew tap with both arch SHAs
+      - name: Update Homebrew tap
         env:
           TAP_TOKEN: ${{ secrets.TAP_TOKEN }}
         run: |
           TAG="${GITHUB_REF_NAME}"
           VERSION="${TAG#v}"
 
-          curl -fL -o arm.dmg "https://github.com/VedangP57/GitAxon/releases/download/${TAG}/GitAxon_${VERSION}_aarch64.dmg"
-          curl -fL -o intel.dmg "https://github.com/VedangP57/GitAxon/releases/download/${TAG}/GitAxon_${VERSION}_x64.dmg"
-
-          SHA_ARM=$(sha256sum arm.dmg | awk '{print $1}')
-          SHA_INTEL=$(sha256sum intel.dmg | awk '{print $1}')
+          curl -fL -o gitaxon.dmg "https://github.com/VedangP57/GitAxon/releases/download/${TAG}/GitAxon_${VERSION}_aarch64.dmg"
+          SHA=$(sha256sum gitaxon.dmg | awk '{print $1}')
 
           git clone https://x-access-token:${TAP_TOKEN}@github.com/VedangP57/homebrew-tap.git /tmp/tap
 
           cat > /tmp/tap/Casks/gitaxon.rb << EOF
           cask "gitaxon" do
-            arch arm: "aarch64", intel: "x64"
-
             version "${VERSION}"
-            sha256 arm:   "${SHA_ARM}",
-                   intel: "${SHA_INTEL}"
+            sha256 "${SHA}"
 
-            url "https://github.com/VedangP57/GitAxon/releases/download/v#{version}/GitAxon_#{version}_#{arch}.dmg"
+            url "https://github.com/VedangP57/GitAxon/releases/download/v#{version}/GitAxon_#{version}_aarch64.dmg"
             name "GitAxon"
             desc "Fast desktop Git GUI — commit graph, multi-repo tabs, conflict resolver"
             homepage "https://github.com/VedangP57/GitAxon"
@@ -89,6 +76,7 @@ jobs:
             caveats <<~EOS
               GitAxon is not notarized. If macOS blocks it on first launch, run:
                 xattr -cr /Applications/GitAxon.app
+              On Intel Macs, Rosetta 2 runs this automatically.
             EOS
           end
           EOF
