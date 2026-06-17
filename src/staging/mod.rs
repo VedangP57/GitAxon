@@ -220,19 +220,34 @@ pub async fn stage_file(repo_path: &str, file_path: &str) -> GitfastResult<()> {
 }
 
 /// Unstages a file (resets in index to HEAD).
+/// On a new repo with no commits (unborn HEAD), removes the entry from the index directly.
 pub async fn unstage_file(repo_path: &str, file_path: &str) -> GitfastResult<()> {
     let path = repo_path.to_string();
     let file = file_path.to_string();
     tokio::task::spawn_blocking(move || {
         let repo = open_repo(&path)?;
-        let head = repo
-            .head()
-            .map_err(|e| GitfastError::GitOperationFailed(e.to_string()))?;
-        let obj = head
-            .peel(ObjectType::Commit)
-            .map_err(|e| GitfastError::GitOperationFailed(e.to_string()))?;
-        repo.reset_default(Some(&obj), [Path::new(&file)])
-            .map_err(|e| GitfastError::GitOperationFailed(e.to_string()))?;
+        match repo.head() {
+            Ok(head) => {
+                let obj = head
+                    .peel(git2::ObjectType::Commit)
+                    .map_err(|e| GitfastError::GitOperationFailed(e.to_string()))?;
+                repo.reset_default(Some(&obj), [Path::new(&file)])
+                    .map_err(|e| GitfastError::GitOperationFailed(e.to_string()))?;
+            }
+            Err(e) if e.code() == git2::ErrorCode::UnbornBranch => {
+                // No commits yet — remove the entry directly from the index
+                let mut index = repo
+                    .index()
+                    .map_err(|e| GitfastError::GitOperationFailed(e.to_string()))?;
+                index
+                    .remove_path(Path::new(&file))
+                    .map_err(|e| GitfastError::GitOperationFailed(e.to_string()))?;
+                index
+                    .write()
+                    .map_err(|e| GitfastError::GitOperationFailed(e.to_string()))?;
+            }
+            Err(e) => return Err(GitfastError::GitOperationFailed(e.to_string())),
+        }
         Ok(())
     })
     .await

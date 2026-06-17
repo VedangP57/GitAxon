@@ -247,18 +247,21 @@ pub async fn diff_working_tree(repo_path: &str) -> GitfastResult<Vec<DiffFile>> 
 }
 
 /// Returns diff of index against HEAD (staged changes).
+/// On a new repo with no commits (unborn HEAD), diffs against the empty tree.
 pub async fn diff_staged(repo_path: &str) -> GitfastResult<Vec<DiffFile>> {
     let path = repo_path.to_string();
     tokio::task::spawn_blocking(move || {
         run_diff(&path, |repo| {
-            let head = repo
-                .head()
-                .map_err(|e| GitfastError::GitOperationFailed(e.to_string()))?;
-            let head_tree = head
-                .peel_to_tree()
-                .map_err(|e| GitfastError::GitOperationFailed(e.to_string()))?;
+            let head_tree = match repo.head() {
+                Ok(head) => Some(
+                    head.peel_to_tree()
+                        .map_err(|e| GitfastError::GitOperationFailed(e.to_string()))?,
+                ),
+                Err(e) if e.code() == git2::ErrorCode::UnbornBranch => None,
+                Err(e) => return Err(GitfastError::GitOperationFailed(e.to_string())),
+            };
             let mut diff = repo
-                .diff_tree_to_index(Some(&head_tree), None, None)
+                .diff_tree_to_index(head_tree.as_ref(), None, None)
                 .map_err(|e| GitfastError::GitOperationFailed(e.to_string()))?;
             process_diff(&mut diff)
         })
@@ -285,15 +288,18 @@ pub async fn diff_working_tree_json(repo_path: &str) -> GitfastResult<String> {
 }
 
 /// Returns staged files for a repository (sync, for use by other modules).
+/// Returns empty vec on a new repo with no commits (unborn HEAD).
 pub fn get_staged_files_from_repo(repo: &Repository) -> GitfastResult<Vec<DiffFile>> {
-    let head = repo
-        .head()
-        .map_err(|e| GitfastError::GitOperationFailed(e.to_string()))?;
-    let head_tree = head
-        .peel_to_tree()
-        .map_err(|e| GitfastError::GitOperationFailed(e.to_string()))?;
+    let head_tree = match repo.head() {
+        Ok(head) => Some(
+            head.peel_to_tree()
+                .map_err(|e| GitfastError::GitOperationFailed(e.to_string()))?,
+        ),
+        Err(e) if e.code() == git2::ErrorCode::UnbornBranch => None,
+        Err(e) => return Err(GitfastError::GitOperationFailed(e.to_string())),
+    };
     let mut diff = repo
-        .diff_tree_to_index(Some(&head_tree), None, None)
+        .diff_tree_to_index(head_tree.as_ref(), None, None)
         .map_err(|e| GitfastError::GitOperationFailed(e.to_string()))?;
     process_diff(&mut diff)
 }
