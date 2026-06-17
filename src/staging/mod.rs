@@ -327,6 +327,8 @@ pub async fn create_commit(
 }
 
 /// Amends the last commit with current index + new message.
+/// Preserves the original author name, email, and timestamp.
+/// Only the committer timestamp is updated to now.
 pub fn amend_commit(
     repo_path: &str,
     message: &str,
@@ -341,10 +343,21 @@ pub fn amend_commit(
     let head = repo.head().map_err(|e| e.to_string())?;
     let parent = head.peel_to_commit().map_err(|e| e.to_string())?;
 
-    let sig = git2::Signature::now(author_name, author_email).map_err(|e| e.to_string())?;
+    // Preserve the original author signature (name, email, AND timestamp).
+    // Only committer gets the current time.
+    let original_author = parent.author();
+    let committer_now = git2::Signature::now(author_name, author_email)
+        .map_err(|e| e.to_string())?;
 
     let oid = parent
-        .amend(Some("HEAD"), Some(&sig), Some(&sig), None, Some(message), Some(&tree))
+        .amend(
+            Some("HEAD"),
+            Some(&original_author), // keep original author + date unchanged
+            Some(&committer_now),   // committer updated to now
+            None,                   // keep original encoding
+            Some(message),
+            Some(&tree),
+        )
         .map_err(|e| e.to_string())?;
 
     Ok(oid.to_string())
