@@ -77,6 +77,8 @@ export type DiffMode = 'working-tree' | 'staged' | 'commit';
 export type RightPanelMode = 'wip' | 'commit';
 
 const centerViewStore = writable<CenterView>('graph');
+const conflictFilePathStore = writable<string | null>(null);
+export const conflictFilePath = { subscribe: conflictFilePathStore.subscribe };
 const diffFileStore = writable<DiffFile | null>(null);
 const diffModeStore = writable<DiffMode>('commit');
 const rightPanelModeStore = writable<RightPanelMode>('wip');
@@ -522,8 +524,8 @@ export async function resetBisect(): Promise<void> {
 
 /** Open the conflict resolver for a specific file. */
 export function openConflictResolver(filePath: string): void {
+	conflictFilePathStore.set(filePath);
 	centerViewStore.set('conflict');
-	// The ConflictResolver component will load the file via its own method
 }
 
 /** Show the commit history for a file. Opens the file-history center view. */

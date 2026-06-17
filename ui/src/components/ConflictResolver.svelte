@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { get } from 'svelte/store';
-	import { currentRepo, closeDiff } from '$lib/store';
+	import { currentRepo, closeDiff, conflictFilePath } from '$lib/store';
 	import { getConflictFile, resolveConflict, continueOperation, abortOperation } from '$lib/tauri';
 	import { showToast } from '$lib/toast';
 	import type { ConflictFile } from '$lib/types';
@@ -9,6 +9,14 @@
 	let resolvedContent = $state('');
 	let isLoading = $state(false);
 	let filePath = $state('');
+
+	// Auto-load when the store sets a new conflict file path
+	$effect(() => {
+		const path = $conflictFilePath;
+		if (path && path !== filePath) {
+			loadConflict(path);
+		}
+	});
 
 	export async function loadConflict(path: string) {
 		const repo = get(currentRepo);
