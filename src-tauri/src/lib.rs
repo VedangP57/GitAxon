@@ -304,6 +304,7 @@ async fn create_commit(
     author_name: String,
     author_email: String,
     amend: Option<bool>,
+    app: AppHandle,
 ) -> Result<String, String> {
     let result = if amend.unwrap_or(false) {
         let rp = repo_path.clone();
@@ -320,6 +321,7 @@ async fn create_commit(
     };
 
     invalidate_status_cache();
+    let _ = app.emit("git-state-changed", repo_path.clone());
 
     Ok(result)
 }
@@ -676,12 +678,13 @@ async fn get_recent_repositories(limit: usize) -> Result<String, String> {
 }
 
 #[tauri::command]
-async fn checkout_branch(repo_path: String, name: String) -> Result<(), String> {
+async fn checkout_branch(repo_path: String, name: String, app: AppHandle) -> Result<(), String> {
     gitaxon::branches::checkout_branch(&repo_path, &name)
         .await
         .map_err(|e| e.to_string())?;
 
     invalidate_status_cache();
+    let _ = app.emit("git-state-changed", repo_path.clone());
 
     Ok(())
 }
