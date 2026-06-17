@@ -492,9 +492,9 @@ async fn start_interactive_rebase(repo_path: String, onto: String, todo: String)
 }
 
 #[tauri::command]
-async fn continue_rebase(repo_path: String) -> Result<String, String> {
+async fn continue_rebase(repo_path: String, new_message: Option<String>) -> Result<String, String> {
     tokio::task::spawn_blocking(move || {
-        gitaxon::rebase::continue_rebase(&repo_path)
+        gitaxon::rebase::continue_rebase(&repo_path, new_message.as_deref())
     })
     .await
     .map_err(|e| e.to_string())?

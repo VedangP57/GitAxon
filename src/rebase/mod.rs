@@ -132,16 +132,16 @@ pub fn get_rebase_todo_for_range(repo_path: &str, onto: &str) -> Result<Vec<Reba
 }
 
 /// Start an interactive rebase using the GIT_SEQUENCE_EDITOR trick.
-/// Writes the user's desired todo to a temp file and uses it to replace the editor.
+/// Uses full 40-char hashes to avoid ambiguity in large repos.
 pub fn start_interactive_rebase(repo_path: &str, onto: &str, todo_json: &str) -> Result<String, String> {
     let items: Vec<RebaseTodoItem> = serde_json::from_str(todo_json)
         .map_err(|e| format!("Invalid todo JSON: {}", e))?;
 
-    // Build the todo content
+    // H13: always use the full hash (item.hash), not short_hash
     let todo_content: String = items
         .iter()
         .map(|item| {
-            let hash = if item.short_hash.is_empty() { &item.hash } else { &item.short_hash };
+            let hash = if item.hash.is_empty() { &item.short_hash } else { &item.hash };
             format!("{} {} {}", item.action, hash, item.message)
         })
         .collect::<Vec<_>>()
@@ -182,11 +182,23 @@ pub fn start_interactive_rebase(repo_path: &str, onto: &str, todo_json: &str) ->
 }
 
 /// Continue the rebase after resolving conflicts.
-pub fn continue_rebase(repo_path: &str) -> Result<String, String> {
+/// If `new_message` is provided (for a reword step), it is written via a temp GIT_EDITOR script.
+pub fn continue_rebase(repo_path: &str, new_message: Option<&str>) -> Result<String, String> {
+    let editor_script = if let Some(msg) = new_message {
+        // H12: for reword, write the message to a temp file and use a script to copy it into git's editor target
+        let tmp = std::env::temp_dir().join("gitaxon_reword_msg");
+        fs::write(&tmp, msg).map_err(|e| e.to_string())?;
+        format!("cp {} \"$1\"", tmp.to_string_lossy())
+    } else {
+        // For all other steps, use the `true` binary to accept the existing message without opening an editor
+        "true".to_string()
+    };
+
     let output = Command::new("git")
         .current_dir(repo_path)
         .args(["rebase", "--continue"])
-        .env("GIT_EDITOR", "true") // auto-accept commit messages
+        .env("GIT_EDITOR", &editor_script)
+        .env("GIT_SEQUENCE_EDITOR", "true")
         .output()
         .map_err(|e| e.to_string())?;
 
