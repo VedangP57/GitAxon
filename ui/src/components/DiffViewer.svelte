@@ -10,26 +10,51 @@
 	import { discardFile, gitBlame, readDiffFileContent, stageHunk, unstageHunk, type BlameLine } from '$lib/tauri';
 	import { debouncedRefreshStatus } from '$lib/store';
 	import { showToast } from '$lib/toast';
-	import type { DiffFile, DiffHunk } from '$lib/types';
+	import type { DiffFile, DiffHunk, DiffLine } from '$lib/types';
 	import { get } from 'svelte/store';
 
 	let activeTab = $state<'diff' | 'file'>('diff');
 	let splitMode = $state(false);
-	let leftPane = $state<HTMLDivElement | null>(null);
-	let rightPane = $state<HTMLDivElement | null>(null);
-	let syncingScroll = false;
 
-	function syncScroll(e: Event) {
-		if (syncingScroll) return;
-		syncingScroll = true;
-		const src = e.target as HTMLDivElement;
-		const other = src === leftPane ? rightPane : leftPane;
-		if (other) {
-			other.scrollTop = src.scrollTop;
-			other.scrollLeft = src.scrollLeft;
-		}
-		syncingScroll = false;
+	interface SplitRow {
+		left: DiffLine | null;
+		right: DiffLine | null;
 	}
+	interface SplitHunk {
+		hunk: DiffHunk;
+		rows: SplitRow[];
+	}
+
+	// Pair deleted/added lines so both columns stay vertically aligned.
+	// Context lines always appear on both sides. Consecutive deleted+added
+	// blocks are interleaved; shorter side gets null (empty) placeholders.
+	const splitRows = $derived.by((): SplitHunk[] => {
+		if (!$diffFile) return [];
+		return $diffFile.hunks.map((hunk) => {
+			const rows: SplitRow[] = [];
+			let i = 0;
+			const lines = hunk.lines;
+			while (i < lines.length) {
+				if (lines[i].line_type === 'Context') {
+					rows.push({ left: lines[i], right: lines[i] });
+					i++;
+				} else {
+					const deleted: DiffLine[] = [];
+					const added: DiffLine[] = [];
+					while (i < lines.length && lines[i].line_type !== 'Context') {
+						if (lines[i].line_type === 'Deleted') deleted.push(lines[i]);
+						else added.push(lines[i]);
+						i++;
+					}
+					const max = Math.max(deleted.length, added.length);
+					for (let j = 0; j < max; j++) {
+						rows.push({ left: deleted[j] ?? null, right: added[j] ?? null });
+					}
+				}
+			}
+			return { hunk, rows };
+		});
+	});
 
 	let fileViewText = $state<string | null>(null);
 	let fileViewLoading = $state(false);
@@ -348,33 +373,28 @@
 		{:else if $diffFile.hunks.length === 0}
 			<div class="dv-empty">No changes to display</div>
 		{:else if splitMode}
-			<div class="split-view">
-				<div class="split-pane split-left" bind:this={leftPane} onscroll={syncScroll}>
-					{#each $diffFile.hunks as hunk (hunk.old_start + '-' + hunk.new_start)}
-						<div class="hunk-header">@@ -{hunk.old_start},{hunk.old_lines} ...</div>
-						{#each hunk.lines as line, i (`${line.old_line_no ?? 'x'}-${line.new_line_no ?? 'x'}-${line.content}-${i}`)}
-							{#if line.line_type === 'Deleted' || line.line_type === 'Context'}
-								<div class="diff-line {line.line_type === 'Deleted' ? 'line-deleted' : 'line-context'}">
-									<span class="ln">{line.old_line_no ?? ''}</span>
-									<span class="content">{line.content}</span>
-								</div>
+			<div class="split-grid">
+				{#each splitRows as { hunk, rows } (hunk.old_start + '-' + hunk.new_start)}
+					<div class="split-hunk-header">@@ -{hunk.old_start},{hunk.old_lines} +{hunk.new_start},{hunk.new_lines} @@</div>
+					{#each rows as row, i (i)}
+						<div class="split-cell {row.left ? (row.left.line_type === 'Deleted' ? 'line-deleted' : 'line-context') : 'line-empty'}">
+							{#if row.left}
+								<span class="sp-ln">{row.left.old_line_no ?? ''}</span>
+								<span class="sp-content">{row.left.content}</span>
+							{:else}
+								<span class="sp-ln"></span><span class="sp-content"></span>
 							{/if}
-						{/each}
-					{/each}
-				</div>
-				<div class="split-pane split-right" bind:this={rightPane} onscroll={syncScroll}>
-					{#each $diffFile.hunks as hunk (hunk.old_start + '-' + hunk.new_start)}
-						<div class="hunk-header">@@ +{hunk.new_start},{hunk.new_lines} ...</div>
-						{#each hunk.lines as line, i (`${line.old_line_no ?? 'x'}-${line.new_line_no ?? 'x'}-${line.content}-${i}`)}
-							{#if line.line_type === 'Added' || line.line_type === 'Context'}
-								<div class="diff-line {line.line_type === 'Added' ? 'line-added' : 'line-context'}">
-									<span class="ln">{line.new_line_no ?? ''}</span>
-									<span class="content">{line.content}</span>
-								</div>
+						</div>
+						<div class="split-cell {row.right ? (row.right.line_type === 'Added' ? 'line-added' : 'line-context') : 'line-empty'}">
+							{#if row.right}
+								<span class="sp-ln">{row.right.new_line_no ?? ''}</span>
+								<span class="sp-content">{row.right.content}</span>
+							{:else}
+								<span class="sp-ln"></span><span class="sp-content"></span>
 							{/if}
-						{/each}
+						</div>
 					{/each}
-				</div>
+				{/each}
 			</div>
 		{:else}
 			<table class="diff-table">
@@ -856,40 +876,38 @@
 	.toolbar-btn:hover { color: var(--text-secondary); background: var(--bg-tertiary); }
 	.toolbar-btn.active { background: var(--bg-tertiary); color: var(--text-primary); border-color: var(--accent-blue); }
 
-	/* ── Split view ── */
-	.split-view {
-		display: flex;
-		height: 100%;
-		overflow: hidden;
-	}
-	.split-pane {
-		flex: 1;
-		min-width: 0;
+	/* ── Split view (CSS grid — single scroll container, aligned rows) ── */
+	.split-grid {
+		display: grid;
+		grid-template-columns: 1fr 1fr;
 		overflow: auto;
+		height: 100%;
 		font-family: 'JetBrains Mono', 'Fira Code', ui-monospace, monospace;
 		font-size: 12px;
 		line-height: 20px;
 	}
-	.split-left {
-		border-right: 1px solid var(--border);
-	}
-	.split-pane .hunk-header {
+	.split-hunk-header {
+		grid-column: 1 / -1;
 		padding: 2px 8px;
 		background: #1c2128;
 		border-top: 1px solid var(--border);
 		border-bottom: 1px solid var(--border);
 		color: var(--text-muted);
 		font-size: 12px;
-	}
-	.split-pane .diff-line {
-		display: flex;
-		align-items: baseline;
 		white-space: pre;
 	}
-	.split-pane .diff-line.line-deleted { background: #4a0d0d; }
-	.split-pane .diff-line.line-added   { background: #0d4a23; }
-	.split-pane .diff-line.line-context { background: transparent; }
-	.split-pane .ln {
+	.split-cell {
+		display: flex;
+		align-items: baseline;
+		min-width: 0;
+		border-right: 1px solid var(--border);
+	}
+	.split-cell:nth-child(even) { border-right: none; }
+	.split-cell.line-deleted { background: #4a0d0d; }
+	.split-cell.line-added   { background: #0d4a23; }
+	.split-cell.line-context { background: transparent; }
+	.split-cell.line-empty   { background: var(--bg-secondary); opacity: 0.5; }
+	.sp-ln {
 		min-width: 40px;
 		padding: 0 8px;
 		text-align: right;
@@ -898,12 +916,12 @@
 		flex-shrink: 0;
 		border-right: 1px solid var(--bg-tertiary);
 	}
-	.split-pane .content {
+	.sp-content {
 		padding: 0 8px;
-		color: var(--text-primary);
 		white-space: pre;
+		color: var(--text-primary);
 	}
-	.split-pane .diff-line.line-deleted .content { color: #f85149; }
-	.split-pane .diff-line.line-added   .content { color: #3fb950; }
-	.split-pane .diff-line.line-context .content { color: var(--text-secondary); }
+	.split-cell.line-deleted .sp-content { color: #f85149; }
+	.split-cell.line-added   .sp-content { color: #3fb950; }
+	.split-cell.line-context .sp-content { color: var(--text-secondary); }
 </style>
