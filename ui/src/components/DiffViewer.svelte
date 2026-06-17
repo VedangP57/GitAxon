@@ -765,14 +765,17 @@
 		height: 100%;
 		overflow: auto;
 		background: var(--bg-primary);
-	}
-	.split-table {
-		border-collapse: collapse;
-		min-width: 100%;
 		font-family: 'JetBrains Mono', 'Fira Code', ui-monospace, monospace;
 		font-size: 12px;
 		line-height: 20px;
 	}
+	/* Tables don't inherit font in browsers — force it */
+	.split-table {
+		font: inherit;
+		border-collapse: collapse;
+		min-width: 100%;
+	}
+	.split-table td { font: inherit; }
 	.sp-hunk-cell {
 		padding: 2px 8px;
 		background: #1c2128;
