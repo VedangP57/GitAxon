@@ -716,22 +716,6 @@
 		align-items: center;
 	}
 
-	.revert-hunk-btn {
-		margin-left: auto;
-		padding: 1px 8px;
-		background: var(--bg-tertiary);
-		border: 1px solid var(--border);
-		border-radius: 3px;
-		color: var(--text-muted);
-		font-size: 10px;
-		font-family: -apple-system, sans-serif;
-		cursor: pointer;
-		opacity: 0;
-		transition: opacity 0.1s;
-	}
-	.hunk-header-row:hover .revert-hunk-btn { opacity: 1; }
-	.revert-hunk-btn:hover { color: var(--accent-orange); border-color: var(--accent-orange); }
-
 	.stage-hunk-btn, .unstage-hunk-btn {
 		margin-left: auto;
 		padding: 1px 8px;

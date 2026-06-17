@@ -613,8 +613,7 @@
 					<div class="empty">No open PRs</div>
 				{:else}
 					{#each prList as pr (pr.number)}
-						<!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
-						<div class="gh-item" onclick={() => openPrReview(pr.number)} title="#{pr.number} — {pr.headBranch} → {pr.baseBranch}">
+						<div class="gh-item" role="button" tabindex="0" onclick={() => openPrReview(pr.number)} onkeydown={(e) => { if (e.key === 'Enter') openPrReview(pr.number); }} title="#{pr.number} — {pr.headBranch} → {pr.baseBranch}">
 							<div class="gh-item-header">
 								<span class="gh-number">#{pr.number}</span>
 								{#if pr.draft}
@@ -646,8 +645,7 @@
 					<div class="empty">No open issues</div>
 				{:else}
 					{#each issueList as issue (issue.number)}
-						<!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
-						<div class="gh-item" onclick={() => openUrl(issue.url)} title="#{issue.number}">
+						<div class="gh-item" role="button" tabindex="0" onclick={() => openUrl(issue.url)} onkeydown={(e) => { if (e.key === 'Enter') openUrl(issue.url); }} title="#{issue.number}">
 							<div class="gh-item-header">
 								<span class="gh-number">#{issue.number}</span>
 								<span class="gh-badge gh-open">Open</span>
@@ -681,9 +679,9 @@
 					<div class="empty">No tags</div>
 				{:else}
 					{#each tagList as tag (tag.name)}
-						<!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
 						<div
 							class="branch-row tag-row"
+							role="none"
 							oncontextmenu={(e) => {
 								e.preventDefault();
 								tagContextMenu = { x: e.clientX, y: e.clientY, tag };

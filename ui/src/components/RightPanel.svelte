@@ -668,8 +668,7 @@
 </div>
 
 {#if fileMenuOpen && fileMenuEntry}
-	<!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
-	<div class="file-menu-backdrop" onclick={closeFileMenu}></div>
+	<div class="file-menu-backdrop" role="none" onclick={closeFileMenu}></div>
 	<div class="file-menu" style="left:{fileMenuX}px; top:{fileMenuY}px">
 		<button class="menu-item" onclick={() => { handleMenuStage(fileMenuEntry); closeFileMenu(); }}>
 			{fileMenuEntry && 'staged' in fileMenuEntry && fileMenuEntry.staged ? 'Unstage file' : 'Stage file'}

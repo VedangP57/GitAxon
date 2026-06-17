@@ -131,10 +131,12 @@
 			<div class="stash-empty">No stashes</div>
 		{:else}
 			{#each stashes as stash (stash.index)}
-				<!-- svelte-ignore a11y_no_static_element_interactions -->
 				<div
 					class="stash-row"
+					role="button"
+					tabindex="0"
 					onclick={() => selectStash(stash.index)}
+					onkeydown={(e) => { if (e.key === 'Enter') selectStash(stash.index); }}
 					oncontextmenu={(e) => {
 						e.preventDefault();
 						ctxMenu = { x: e.clientX, y: e.clientY, stash };
@@ -171,10 +173,8 @@
 	{/if}
 
 	{#if showPushModal}
-		<!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
-		<div class="modal-overlay" onclick={() => (showPushModal = false)}>
-			<!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
-			<div class="modal" onclick={(e) => e.stopPropagation()}>
+		<div class="modal-overlay" role="none" onclick={() => (showPushModal = false)}>
+			<div class="modal" role="dialog" onclick={(e) => e.stopPropagation()}>
 				<h3>Create Stash</h3>
 				<input
 					class="modal-input"
@@ -192,10 +192,8 @@
 	{/if}
 
 	{#if branchModalStash}
-		<!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
-		<div class="modal-overlay" onclick={() => (branchModalStash = null)}>
-			<!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
-			<div class="modal" onclick={(e) => e.stopPropagation()}>
+		<div class="modal-overlay" role="none" onclick={() => (branchModalStash = null)}>
+			<div class="modal" role="dialog" onclick={(e) => e.stopPropagation()}>
 				<h3>Create Branch from Stash</h3>
 				<p class="modal-sub">{branchModalStash.name}</p>
 				<input
@@ -214,8 +212,7 @@
 	{/if}
 
 	{#if ctxMenu}
-		<!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
-		<div class="ctx-backdrop" onclick={() => (ctxMenu = null)}></div>
+		<div class="ctx-backdrop" role="none" onclick={() => (ctxMenu = null)}></div>
 		<div class="ctx-menu" style={`top:${ctxMenu.y}px; left:${ctxMenu.x}px`}>
 			<button class="ctx-item" onclick={() => { selectStash(ctxMenu!.stash.index); ctxMenu = null; }}>
 				Preview stash

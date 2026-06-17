@@ -1045,7 +1045,10 @@ const virtualItems = $derived.by(() => {
 											class:pill-checkoutable={!label.isTag && !label.isRemote && !label.isHead}
 											style="color: {pillColor}; background: color-mix(in srgb, {pillColor} 18%, var(--bg-tertiary)); border-color: color-mix(in srgb, {pillColor} 35%, var(--bg-tertiary));"
 											title={pillTitle}
+											role="button"
+											tabindex="0"
 											onclick={(e) => handleBranchPillClick(e, lc, label)}
+											onkeydown={(e) => { if (e.key === 'Enter') e.currentTarget.click(); }}
 										>
 											{#if label.isHead}✓ {/if}{label.name}
 										</span>

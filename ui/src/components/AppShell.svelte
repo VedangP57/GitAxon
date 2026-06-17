@@ -771,13 +771,14 @@
 				</p>
 
 				<div class="form-group">
-					<label>Name</label>
-					<input bind:value={switchName} placeholder="Your name" class="form-input" />
+					<label for="switch-name-input">Name</label>
+					<input id="switch-name-input" bind:value={switchName} placeholder="Your name" class="form-input" />
 				</div>
 
 				<div class="form-group">
-					<label>Email</label>
+					<label for="switch-email-input">Email</label>
 					<input
+						id="switch-email-input"
 						bind:value={switchEmail}
 						placeholder="your@email.com"
 						type="email"
@@ -1033,22 +1034,6 @@
 		padding: 6px 12px;
 		font-size: 10px;
 		color: var(--text-muted);
-	}
-
-	.tb-profile-btn {
-		width: 28px;
-		height: 28px;
-		border-radius: 50%;
-		background: var(--bg-tertiary);
-		border: 1px solid var(--border);
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		color: var(--text-secondary);
-		cursor: pointer;
-	}
-	.tb-profile-btn:hover {
-		border-color: var(--text-muted);
 	}
 
 	/* ── Main body: flex row ── */
