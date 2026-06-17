@@ -14,6 +14,20 @@
 	import { get } from 'svelte/store';
 
 	let activeTab = $state<'diff' | 'file'>('diff');
+	let splitMode = $state(false);
+	let leftPane = $state<HTMLDivElement | null>(null);
+	let rightPane = $state<HTMLDivElement | null>(null);
+	let syncingScroll = false;
+
+	function syncScroll(e: Event) {
+		if (syncingScroll) return;
+		syncingScroll = true;
+		const src = e.target as HTMLDivElement;
+		const other = src === leftPane ? rightPane : leftPane;
+		if (other) other.scrollTop = src.scrollTop;
+		syncingScroll = false;
+	}
+
 	let fileViewText = $state<string | null>(null);
 	let fileViewLoading = $state(false);
 	let fileViewErr = $state<string | null>(null);
@@ -244,6 +258,12 @@
 				<button class="toggle-btn bt-btn" class:active={blameMode} class:bt-active={blameMode} onclick={toggleBlame} title="Toggle blame view">Blame</button>
 				<button class="toggle-btn">History</button>
 			</div>
+			<button
+				class="toolbar-btn"
+				class:active={splitMode}
+				onclick={() => (splitMode = !splitMode)}
+				title="Toggle split view"
+			>⇔ Split</button>
 			{#if $diffMode === 'working-tree' && $diffFile}
 				<button
 					class="discard-file-btn"
@@ -324,6 +344,35 @@
 			</div>
 		{:else if $diffFile.hunks.length === 0}
 			<div class="dv-empty">No changes to display</div>
+		{:else if splitMode}
+			<div class="split-view">
+				<div class="split-pane split-left" bind:this={leftPane} onscroll={syncScroll}>
+					{#each $diffFile.hunks as hunk (hunk.old_start + '-' + hunk.new_start)}
+						<div class="hunk-header">@@ -{hunk.old_start},{hunk.old_lines} ...</div>
+						{#each hunk.lines as line, i (`${line.old_line_no ?? 'x'}-${line.new_line_no ?? 'x'}-${line.content}-${i}`)}
+							{#if line.line_type === 'Deleted' || line.line_type === 'Context'}
+								<div class="diff-line {line.line_type === 'Deleted' ? 'line-deleted' : 'line-context'}">
+									<span class="ln">{line.old_line_no ?? ''}</span>
+									<span class="content">{line.content}</span>
+								</div>
+							{/if}
+						{/each}
+					{/each}
+				</div>
+				<div class="split-pane split-right" bind:this={rightPane} onscroll={syncScroll}>
+					{#each $diffFile.hunks as hunk (hunk.old_start + '-' + hunk.new_start)}
+						<div class="hunk-header">@@ +{hunk.new_start},{hunk.new_lines} ...</div>
+						{#each hunk.lines as line, i (`${line.old_line_no ?? 'x'}-${line.new_line_no ?? 'x'}-${line.content}-${i}`)}
+							{#if line.line_type === 'Added' || line.line_type === 'Context'}
+								<div class="diff-line {line.line_type === 'Added' ? 'line-added' : 'line-context'}">
+									<span class="ln">{line.new_line_no ?? ''}</span>
+									<span class="content">{line.content}</span>
+								</div>
+							{/if}
+						{/each}
+					{/each}
+				</div>
+			</div>
 		{:else}
 			<table class="diff-table">
 				<colgroup>
@@ -788,4 +837,70 @@
 		transition: color 0.1s;
 	}
 	.dc-btn-cancel:hover { color: var(--text-primary); }
+
+	/* ── Toolbar split button ── */
+	.toolbar-btn {
+		padding: 3px 10px;
+		background: var(--bg-primary);
+		border: 1px solid var(--border);
+		border-radius: 4px;
+		color: var(--text-muted);
+		font-size: 11px;
+		cursor: pointer;
+		transition: color 0.1s, background 0.1s;
+		white-space: nowrap;
+	}
+	.toolbar-btn:hover { color: var(--text-secondary); background: var(--bg-tertiary); }
+	.toolbar-btn.active { background: var(--bg-tertiary); color: var(--text-primary); border-color: var(--accent-blue); }
+
+	/* ── Split view ── */
+	.split-view {
+		display: flex;
+		height: 100%;
+		overflow: hidden;
+	}
+	.split-pane {
+		flex: 1;
+		overflow: auto;
+		font-family: 'JetBrains Mono', 'Fira Code', ui-monospace, monospace;
+		font-size: 12px;
+		line-height: 20px;
+	}
+	.split-left {
+		border-right: 1px solid var(--border);
+	}
+	.split-pane .hunk-header {
+		padding: 2px 8px;
+		background: #1c2128;
+		border-top: 1px solid var(--border);
+		border-bottom: 1px solid var(--border);
+		color: var(--text-muted);
+		font-size: 12px;
+	}
+	.split-pane .diff-line {
+		display: flex;
+		align-items: baseline;
+		white-space: pre;
+	}
+	.split-pane .diff-line.line-deleted { background: #4a0d0d; }
+	.split-pane .diff-line.line-added   { background: #0d4a23; }
+	.split-pane .diff-line.line-context { background: transparent; }
+	.split-pane .ln {
+		min-width: 40px;
+		padding: 0 8px;
+		text-align: right;
+		color: var(--text-muted);
+		user-select: none;
+		flex-shrink: 0;
+		border-right: 1px solid var(--bg-tertiary);
+	}
+	.split-pane .content {
+		padding: 0 8px;
+		color: var(--text-primary);
+		white-space: pre;
+		overflow: hidden;
+	}
+	.split-pane .diff-line.line-deleted .content { color: #f85149; }
+	.split-pane .diff-line.line-added   .content { color: #3fb950; }
+	.split-pane .diff-line.line-context .content { color: var(--text-secondary); }
 </style>
