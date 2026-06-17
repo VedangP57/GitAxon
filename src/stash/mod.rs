@@ -58,13 +58,13 @@ pub fn stash_push(repo_path: &str, message: &str) -> Result<String, String> {
     let output = if message.trim().is_empty() {
         std::process::Command::new("git")
             .current_dir(repo_path)
-            .args(["stash", "push"])
+            .args(["stash", "push", "--include-untracked"])
             .output()
             .map_err(|e| e.to_string())?
     } else {
         std::process::Command::new("git")
             .current_dir(repo_path)
-            .args(["stash", "push", "-m", message])
+            .args(["stash", "push", "--include-untracked", "-m", message])
             .output()
             .map_err(|e| e.to_string())?
     };
