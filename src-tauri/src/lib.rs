@@ -913,12 +913,10 @@ fn get_repo_coords(repo_path: &str) -> Result<github::RepoCoords, String> {
     Ok(coords)
 }
 
-fn get_token(app: &AppHandle, platform: &str) -> String {
-    let store = app
-        .store("tokens.json")
-        .ok();
-    store
-        .and_then(|s| s.get(platform).and_then(|v| v.as_str().map(String::from)))
+fn get_token(_app: &AppHandle, platform: &str) -> String {
+    keyring::Entry::new("gitaxon", platform)
+        .ok()
+        .and_then(|e| e.get_password().ok())
         .unwrap_or_default()
 }
 
@@ -987,17 +985,22 @@ async fn submit_pr_review(repo_path: String, pr_number: u64, body: String, event
 
 #[tauri::command]
 async fn set_api_token(platform: String, token: String, app: AppHandle) -> Result<(), String> {
-    let store = app
-        .store("tokens.json")
-        .map_err(|e| e.to_string())?;
-    store.set(&platform, serde_json::json!(token));
-    store.save().map_err(|e| e.to_string())?;
+    // Migrate any existing plaintext token from the old store
+    if let Ok(store) = app.store("tokens.json") {
+        let _ = store.delete(&platform);
+        let _ = store.save();
+    }
+    let entry = keyring::Entry::new("gitaxon", &platform).map_err(|e| e.to_string())?;
+    entry.set_password(&token).map_err(|e| e.to_string())?;
     Ok(())
 }
 
 #[tauri::command]
-async fn get_api_token(platform: String, app: AppHandle) -> Result<String, String> {
-    Ok(get_token(&app, &platform))
+async fn get_api_token(platform: String, _app: AppHandle) -> Result<String, String> {
+    Ok(keyring::Entry::new("gitaxon", &platform)
+        .ok()
+        .and_then(|e| e.get_password().ok())
+        .unwrap_or_default())
 }
 
 #[tauri::command]
