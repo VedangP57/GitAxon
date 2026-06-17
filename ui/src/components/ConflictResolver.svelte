@@ -10,6 +10,10 @@
 	let isLoading = $state(false);
 	let filePath = $state('');
 
+	let isDirty = $derived(
+		resolvedContent !== '' && resolvedContent !== (conflictFile?.merged ?? '')
+	);
+
 	// Auto-load when the store sets a new conflict file path
 	$effect(() => {
 		const path = $conflictFilePath;
@@ -78,6 +82,15 @@
 		}
 	}
 
+	function handleBack() {
+		if (isDirty) {
+			if (!confirm('Discard your changes to the conflict resolution? This cannot be undone.')) {
+				return;
+			}
+		}
+		closeDiff();
+	}
+
 	function lineCount(text: string): number {
 		return text.split('\n').length;
 	}
@@ -85,7 +98,7 @@
 
 <div class="conflict-resolver">
 	<div class="cr-header">
-		<button class="cr-back" onclick={() => closeDiff()}>←</button>
+		<button class="cr-back" onclick={handleBack}>←</button>
 		<div class="cr-title">
 			<span class="cr-label">CONFLICT RESOLUTION</span>
 			<span class="cr-path">{filePath}</span>
