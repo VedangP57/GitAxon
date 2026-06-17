@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use chrono::{TimeZone, Utc};
-use git2::{Delta, DiffFindOptions, Patch, Repository};
+use git2::{Delta, DiffFindOptions, DiffOptions, Patch, Repository};
 use serde::{Deserialize, Serialize};
 
 use crate::errors::{GitfastError, GitfastResult};
@@ -180,6 +180,48 @@ fn process_diff(diff: &mut git2::Diff) -> Result<Vec<DiffFile>, GitfastError> {
     Ok(files)
 }
 
+/// Build a synthetic all-added DiffFile from raw file bytes (for untracked files).
+fn untracked_to_diff_file(path: &str, full_path: &Path) -> Option<DiffFile> {
+    let bytes = fs::read(full_path).ok()?;
+    // Skip binary files
+    if bytes.contains(&0u8) {
+        return Some(DiffFile {
+            old_path: None,
+            new_path: Some(path.to_string()),
+            status: FileStatus::Added,
+            hunks: vec![],
+        });
+    }
+    let content = String::from_utf8_lossy(&bytes);
+    let lines: Vec<DiffLine> = content
+        .lines()
+        .enumerate()
+        .map(|(i, l)| DiffLine {
+            content: format!("{}\n", l),
+            line_type: LineType::Added,
+            old_line_no: None,
+            new_line_no: Some((i + 1) as u32),
+        })
+        .collect();
+    let n = lines.len() as u32;
+    Some(DiffFile {
+        old_path: None,
+        new_path: Some(path.to_string()),
+        status: FileStatus::Added,
+        hunks: if n == 0 {
+            vec![]
+        } else {
+            vec![DiffHunk {
+                old_start: 0,
+                old_lines: 0,
+                new_start: 1,
+                new_lines: n,
+                lines,
+            }]
+        },
+    })
+}
+
 fn run_diff(
     repo_path: &str,
     f: impl FnOnce(&Repository) -> Result<Vec<DiffFile>, GitfastError>,
@@ -236,10 +278,26 @@ pub async fn diff_working_tree(repo_path: &str) -> GitfastResult<Vec<DiffFile>> 
     let path = repo_path.to_string();
     tokio::task::spawn_blocking(move || {
         run_diff(&path, |repo| {
+            let mut opts = DiffOptions::new();
+            opts.include_untracked(true).recurse_untracked_dirs(true);
             let mut diff = repo
-                .diff_index_to_workdir(None, None)
+                .diff_index_to_workdir(None, Some(&mut opts))
                 .map_err(|e| GitfastError::GitOperationFailed(e.to_string()))?;
-            process_diff(&mut diff)
+            let mut files = process_diff(&mut diff)?;
+            // For untracked files (hunks==0 because git has no baseline),
+            // read the file from disk and synthesise all-added hunks.
+            let repo_root = repo.workdir().map(|p| p.to_path_buf()).unwrap_or_default();
+            for f in &mut files {
+                if f.status == FileStatus::Added && f.hunks.is_empty() {
+                    if let Some(rel) = f.new_path.as_deref() {
+                        let full = repo_root.join(rel);
+                        if let Some(synthetic) = untracked_to_diff_file(rel, &full) {
+                            f.hunks = synthetic.hunks;
+                        }
+                    }
+                }
+            }
+            Ok(files)
         })
     })
     .await
