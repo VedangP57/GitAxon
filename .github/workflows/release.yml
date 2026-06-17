@@ -16,6 +16,8 @@ jobs:
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
 
       - name: Cache Rust
         uses: Swatinem/rust-cache@v2
@@ -28,7 +30,7 @@ jobs:
       - name: Install frontend deps
         run: cd ui && bun install
 
-      - name: Build and publish release
+      - name: Build and publish release (universal)
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -38,15 +40,14 @@ jobs:
           releaseName: GitAxon ${{ github.ref_name }}
           releaseDraft: false
           prerelease: false
+          args: --target universal-apple-darwin
 
       - name: Get version and SHA256
         id: info
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
-          ARCH=$(uname -m | sed 's/x86_64/x64/;s/arm64/aarch64/')
-          DMG="src-tauri/target/release/bundle/dmg/GitAxon_${VERSION}_${ARCH}.dmg"
+          DMG="src-tauri/target/universal-apple-darwin/release/bundle/dmg/GitAxon_${VERSION}_universal.dmg"
           echo "VERSION=${VERSION}" >> $GITHUB_OUTPUT
-          echo "ARCH=${ARCH}" >> $GITHUB_OUTPUT
           echo "SHA=$(shasum -a 256 "$DMG" | awk '{print $1}')" >> $GITHUB_OUTPUT
 
       - name: Update Homebrew tap
@@ -61,7 +62,7 @@ jobs:
             version "${VERSION}"
             sha256 "${SHA256}"
 
-            url "https://github.com/VedangP57/GitAxon/releases/download/v${VERSION}/GitAxon_${VERSION}_${ARCH}.dmg"
+            url "https://github.com/VedangP57/GitAxon/releases/download/v${VERSION}/GitAxon_${VERSION}_universal.dmg"
             name "GitAxon"
             desc "Fast desktop Git GUI — commit graph, multi-repo tabs, conflict resolver"
             homepage "https://github.com/VedangP57/GitAxon"
