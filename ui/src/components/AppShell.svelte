@@ -7,6 +7,7 @@
 	import BranchSidebar from "./BranchSidebar.svelte";
 	import TabBar from "./TabBar.svelte";
 	import Toast from "./Toast.svelte";
+	import CommandPalette from "./CommandPalette.svelte";
 	import {
 		loadRepo,
 		currentRepo,
@@ -66,6 +67,24 @@
 	let rightWidth = $state(stored("gax-right", 300));
 	let leftPanelOpen = $state(stored("gax-left-open", 1) === 1);
 	let resizing = $state<"left" | "right" | null>(null);
+
+	let paletteOpen = $state(false);
+
+	function handleGlobalKey(e: KeyboardEvent) {
+		if (!e.metaKey && !e.ctrlKey) return;
+		const key = e.key.toLowerCase();
+		// ⌘K — command palette
+		if (key === 'k') { e.preventDefault(); paletteOpen = true; return; }
+		// ⌘F — fetch
+		if (key === 'f') { e.preventDefault(); fetchFromRemote('origin'); return; }
+		// ⌘P — push  (skip if input focused)
+		if (key === 'p' && !(document.activeElement instanceof HTMLInputElement || document.activeElement instanceof HTMLTextAreaElement)) {
+			e.preventDefault();
+			const repo = get(currentRepo);
+			if (repo) import('$lib/tauri').then(({ push }) => push(repo, 'origin', ''));
+			return;
+		}
+	}
 
 	function startResize(which: "left" | "right") {
 		resizing = which;
@@ -850,6 +869,10 @@
 		</div>
 	{/if}
 
+	<svelte:window onkeydown={handleGlobalKey} />
+	{#if paletteOpen}
+		<CommandPalette onclose={() => (paletteOpen = false)} />
+	{/if}
 
 	<Toast />
 </div>
