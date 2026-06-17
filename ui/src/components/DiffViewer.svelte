@@ -24,7 +24,10 @@
 		syncingScroll = true;
 		const src = e.target as HTMLDivElement;
 		const other = src === leftPane ? rightPane : leftPane;
-		if (other) other.scrollTop = src.scrollTop;
+		if (other) {
+			other.scrollTop = src.scrollTop;
+			other.scrollLeft = src.scrollLeft;
+		}
 		syncingScroll = false;
 	}
 
@@ -861,6 +864,7 @@
 	}
 	.split-pane {
 		flex: 1;
+		min-width: 0;
 		overflow: auto;
 		font-family: 'JetBrains Mono', 'Fira Code', ui-monospace, monospace;
 		font-size: 12px;
@@ -898,7 +902,6 @@
 		padding: 0 8px;
 		color: var(--text-primary);
 		white-space: pre;
-		overflow: hidden;
 	}
 	.split-pane .diff-line.line-deleted .content { color: #f85149; }
 	.split-pane .diff-line.line-added   .content { color: #3fb950; }
