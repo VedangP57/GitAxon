@@ -116,24 +116,49 @@ pub fn resolve_conflict(repo_path: &str, file_path: &str, resolved_content: &str
 pub fn continue_operation(repo_path: &str) -> Result<String, String> {
     let state = detect_operation_state(repo_path)?;
 
-    let args = if state.in_rebase {
-        vec!["rebase", "--continue"]
+    if state.in_merge {
+        // C10: verify all conflicts are resolved before committing
+        let repo = crate::repo_pool::open_repo(repo_path).map_err(|e| e.to_string())?;
+        let mut index = repo.index().map_err(|e| e.to_string())?;
+        index.read(true).map_err(|e| e.to_string())?;
+        if index.has_conflicts() {
+            return Err(
+                "There are still unresolved conflicts. Resolve all conflicts before continuing."
+                    .to_string(),
+            );
+        }
+        let output = Command::new("git")
+            .current_dir(repo_path)
+            .args(["commit", "--no-edit"])
+            .output()
+            .map_err(|e| e.to_string())?;
+        return if output.status.success() {
+            Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+        } else {
+            Err(String::from_utf8_lossy(&output.stderr).trim().to_string())
+        };
+    }
+
+    let (args, needs_editor_skip) = if state.in_rebase {
+        // C9: set GIT_EDITOR=true to prevent the process from hanging when git
+        // opens an editor (e.g., during non-reword steps after conflict resolution)
+        (vec!["rebase", "--continue"], true)
     } else if state.in_cherry_pick {
-        vec!["cherry-pick", "--continue"]
+        (vec!["cherry-pick", "--continue"], true)
     } else if state.in_revert {
-        vec!["revert", "--continue"]
-    } else if state.in_merge {
-        // For merge, committing is "continue"
-        vec!["commit", "--no-edit"]
+        (vec!["revert", "--continue"], true)
     } else {
         return Err("No operation in progress".to_string());
     };
 
-    let output = Command::new("git")
-        .current_dir(repo_path)
-        .args(&args)
-        .output()
-        .map_err(|e| e.to_string())?;
+    let mut cmd = Command::new("git");
+    cmd.current_dir(repo_path).args(&args);
+    if needs_editor_skip {
+        cmd.env("GIT_EDITOR", "true")
+           .env("GIT_SEQUENCE_EDITOR", "true");
+    }
+
+    let output = cmd.output().map_err(|e| e.to_string())?;
 
     if output.status.success() {
         Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
