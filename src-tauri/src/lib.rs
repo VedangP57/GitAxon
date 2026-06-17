@@ -60,48 +60,54 @@ async fn get_full_status(
 }
 
 #[tauri::command]
-async fn start_file_watch(
-    repo_path: String,
-    app: AppHandle,
-) -> Result<(), String> {
-    let app_handle = app.clone();
+async fn start_file_watch(repo_path: String, app: AppHandle) -> Result<(), String> {
     let repo_path_str = repo_path.clone();
 
-    // Use a single background thread with a channel to avoid unbounded thread spawning.
-    let (tx, rx) = std::sync::mpsc::channel::<()>();
+    // Channel for worktree file changes → update status + emit worktree-changed
+    let (wt_tx, wt_rx) = std::sync::mpsc::channel::<()>();
+    let wt_app = app.clone();
+    let wt_repo = repo_path_str.clone();
     std::thread::spawn(move || {
-        while rx.recv().is_ok() {
-            // Drain any queued notifications to coalesce rapid changes
-            while rx.try_recv().is_ok() {}
-
-            match gitaxon::watcher::update_status(&repo_path_str) {
+        while wt_rx.recv().is_ok() {
+            while wt_rx.try_recv().is_ok() {}
+            match gitaxon::watcher::update_status(&wt_repo) {
                 Ok(patch) => {
-                    if patch.added.is_empty()
-                        && patch.removed.is_empty()
-                        && patch.changed.is_empty()
-                    {
+                    if patch.added.is_empty() && patch.removed.is_empty() && patch.changed.is_empty() {
                         continue;
                     }
-
                     if let Ok(payload) = serde_json::to_string(&patch) {
-                        let _ = app_handle.emit("worktree-changed", payload);
+                        let _ = wt_app.emit("worktree-changed", payload);
                     }
                 }
-                Err(_e) => {}
+                Err(_) => {}
             }
         }
     });
 
-    gitaxon::watcher::start_watching(&repo_path, move || {
-        let _ = tx.send(());
-    })?;
+    // Channel for git-state changes → emit git-state-changed
+    let (gs_tx, gs_rx) = std::sync::mpsc::channel::<()>();
+    let gs_app = app.clone();
+    std::thread::spawn(move || {
+        while gs_rx.recv().is_ok() {
+            while gs_rx.try_recv().is_ok() {}
+            let _ = gs_app.emit("git-state-changed", ());
+        }
+    });
+
+    gitaxon::watcher::start_watching(
+        &repo_path,
+        move || { let _ = wt_tx.send(()); },
+        move || { let _ = gs_tx.send(()); },
+    )?;
 
     Ok(())
 }
 
 #[tauri::command]
-async fn stop_file_watch() -> Result<(), String> {
-    gitaxon::watcher::stop_watching();
+async fn stop_file_watch(repo_path: Option<String>) -> Result<(), String> {
+    if let Some(path) = repo_path {
+        gitaxon::watcher::stop_watching(&path);
+    }
     Ok(())
 }
 
@@ -1196,7 +1202,7 @@ pub fn run() {
         })
         .on_window_event(|_window, event| {
             if let tauri::WindowEvent::Destroyed = event {
-                gitaxon::watcher::stop_watching();
+                gitaxon::watcher::stop_all_watchers();
             }
         })
         .invoke_handler(tauri::generate_handler![

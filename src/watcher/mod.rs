@@ -1,6 +1,7 @@
 use notify::event::EventKind;
 use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher};
 use std::collections::HashMap;
+use std::collections::HashMap as StdHashMap;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
@@ -33,8 +34,13 @@ type StatusSnapshot = HashMap<String, (String, bool)>;
 static PREV_STATUS: Lazy<Mutex<HashMap<String, StatusSnapshot>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
 
-static WATCHER: Mutex<Option<RecommendedWatcher>> = Mutex::new(None);
-static IS_RUNNING: AtomicBool = AtomicBool::new(false);
+struct WatcherHandle {
+    _watcher: RecommendedWatcher,
+    is_active: Arc<AtomicBool>,
+}
+
+static WATCHERS: Lazy<Mutex<StdHashMap<String, WatcherHandle>>> =
+    Lazy::new(|| Mutex::new(StdHashMap::new()));
 
 /// Pre-compiled set of path fragments to skip in watcher events.
 /// Checked once at module load instead of per-event string matching.
@@ -276,17 +282,23 @@ fn watch_recursive_limited(
     }
 }
 
-pub fn start_watching<F>(repo_path: &str, on_change: F) -> Result<(), String>
+/// Start watching `repo_path`. When a worktree file changes, `on_worktree_change` fires.
+/// When a .git state file changes (HEAD, index, refs, sentinels), `on_git_state_change` fires.
+/// Multiple repos can be watched simultaneously.
+pub fn start_watching<F, G>(
+    repo_path: &str,
+    on_worktree_change: F,
+    on_git_state_change: G,
+) -> Result<(), String>
 where
     F: Fn() + Send + Sync + 'static,
+    G: Fn() + Send + Sync + 'static,
 {
-    let mut handle = WATCHER.lock()
-        .map_err(|_| "Failed to lock WATCHER".to_string())?;
-    *handle = None;
-    IS_RUNNING.store(false, Ordering::Relaxed);
+    let is_active = Arc::new(AtomicBool::new(true));
+    let is_active_clone = is_active.clone();
 
-    let last_worktree = std::sync::Arc::new(Mutex::new(Instant::now() - Duration::from_secs(10)));
-    let last_gitstate = std::sync::Arc::new(Mutex::new(Instant::now() - Duration::from_secs(10)));
+    let last_worktree = Arc::new(Mutex::new(Instant::now() - Duration::from_secs(10)));
+    let last_gitstate = Arc::new(Mutex::new(Instant::now() - Duration::from_secs(10)));
 
     let last_worktree2 = last_worktree.clone();
     let last_gitstate2 = last_gitstate.clone();
@@ -301,7 +313,7 @@ where
 
     let mut watcher = RecommendedWatcher::new(
         move |res: notify::Result<notify::Event>| {
-            if !IS_RUNNING.load(Ordering::Relaxed) {
+            if !is_active_clone.load(Ordering::Relaxed) {
                 return;
             }
 
@@ -329,15 +341,15 @@ where
                     continue;
                 }
 
-                // Any .git state change (HEAD/index/refs) or non-.git file change
-                // collapses to a single on_change() trigger. Rust status diffing
-                // will figure out what actually changed.
                 let is_git_state = p.contains("/.git/HEAD")
                     || p.contains("/.git/index")
                     || p.contains("/.git/refs/heads/")
                     || p.contains("/.git/refs/remotes/")
                     || p.contains("/.git/packed-refs")
-                    || p.contains("/.git/COMMIT_EDITMSG");
+                    || p.contains("/.git/COMMIT_EDITMSG")
+                    || p.contains("/.git/MERGE_HEAD")
+                    || p.contains("/.git/CHERRY_PICK_HEAD")
+                    || p.contains("/.git/REVERT_HEAD");
 
                 let is_worktree = !p.contains("/.git/");
 
@@ -349,7 +361,7 @@ where
                         *last = Instant::now();
                         drop(last);
                         log::debug!("Git state change: {}", p);
-                        on_change();
+                        on_git_state_change();
                     }
                     return;
                 }
@@ -361,7 +373,7 @@ where
                         drop(last);
 
                         log::debug!("Source file changed: {}", p);
-                        on_change();
+                        on_worktree_change();
                     }
                     return;
                 }
@@ -374,35 +386,14 @@ where
     // Watch specific .git files and refs only; never watch .git/objects or logs.
     let git_dir = real_repo_path.join(".git");
     if git_dir.exists() {
-        // HEAD - branch switches
-        let head = git_dir.join("HEAD");
-        if head.exists() {
-            let _ = watcher.watch(&head, RecursiveMode::NonRecursive);
+        for filename in &["HEAD", "index", "COMMIT_EDITMSG", "packed-refs",
+                          "MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD"] {
+            let p = git_dir.join(filename);
+            // Watch even if file doesn't exist yet — notify will catch Create events
+            let _ = watcher.watch(&p, RecursiveMode::NonRecursive);
         }
-
-        // index - staging changes
-        let index = git_dir.join("index");
-        if index.exists() {
-            let _ = watcher.watch(&index, RecursiveMode::NonRecursive);
-        }
-
-        // COMMIT_EDITMSG - commit message edits
-        let commit_editmsg = git_dir.join("COMMIT_EDITMSG");
-        if commit_editmsg.exists() {
-            let _ = watcher.watch(&commit_editmsg, RecursiveMode::NonRecursive);
-        }
-
-        // refs/heads - local branch changes
-        let heads = git_dir.join("refs").join("heads");
-        if heads.exists() {
-            let _ = watcher.watch(&heads, RecursiveMode::Recursive);
-        }
-
-        // refs/remotes - remote branch changes (small)
-        let remotes = git_dir.join("refs").join("remotes");
-        if remotes.exists() {
-            let _ = watcher.watch(&remotes, RecursiveMode::Recursive);
-        }
+        let _ = watcher.watch(&git_dir.join("refs").join("heads"), RecursiveMode::Recursive);
+        let _ = watcher.watch(&git_dir.join("refs").join("remotes"), RecursiveMode::Recursive);
     }
 
     // Directories that should never be watched recursively as "sources"
@@ -429,15 +420,32 @@ where
     watch_recursive_limited(&mut watcher, &real_repo_path, 0, 4, &skip);
     log::debug!("Source file watching setup complete");
 
-    *handle = Some(watcher);
-    IS_RUNNING.store(true, Ordering::Relaxed);
+    let mut handles = WATCHERS.lock().map_err(|_| "Failed to lock WATCHERS".to_string())?;
+    handles.insert(repo_path_str.clone(), WatcherHandle { _watcher: watcher, is_active });
     log::info!("File watcher started for {}", repo_path_str);
     Ok(())
 }
 
-pub fn stop_watching() {
-    IS_RUNNING.store(false, Ordering::Relaxed);
-    if let Ok(mut handle) = WATCHER.lock() {
-        *handle = None;
+/// Stop watching a specific repo. Other repos remain watched.
+pub fn stop_watching(repo_path: &str) {
+    let real = std::fs::canonicalize(repo_path)
+        .unwrap_or_else(|_| Path::new(repo_path).to_path_buf());
+    let key = real.to_string_lossy().to_string();
+
+    if let Ok(mut handles) = WATCHERS.lock() {
+        if let Some(handle) = handles.remove(&key) {
+            handle.is_active.store(false, Ordering::Relaxed);
+        }
+    }
+    log::info!("File watcher stopped for {}", key);
+}
+
+/// Stop all active watchers (used on window close).
+pub fn stop_all_watchers() {
+    if let Ok(mut handles) = WATCHERS.lock() {
+        for (key, handle) in handles.drain() {
+            handle.is_active.store(false, Ordering::Relaxed);
+            log::info!("File watcher stopped for {}", key);
+        }
     }
 }
