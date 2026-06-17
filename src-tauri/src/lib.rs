@@ -1096,13 +1096,15 @@ async fn open_repository(repo_path: String) -> Result<String, String> {
 
 /// Single IPC call to load all repo data on open.
 /// Replaces 4 separate calls: getCommits + getBranches + getTags + getStatus
+/// The `limit` parameter controls how many commits to fetch (default 500).
+/// Sub-fetch failures return empty defaults rather than failing the whole response.
 #[tauri::command]
-async fn get_repo_state(repo_path: String) -> Result<RepoState, String> {
+async fn get_repo_state(repo_path: String, limit: Option<usize>) -> Result<RepoState, String> {
     let rp = repo_path.clone();
+    let commit_limit = limit.unwrap_or(500);
 
-    // Run all four fetches concurrently via tokio::join
     let (commits_res, branches_res, tags_res, status_res) = tokio::join!(
-        gitaxon::graph::get_laned_commits_json(&rp, 500, 0),
+        gitaxon::graph::get_laned_commits_json(&rp, commit_limit, 0),
         gitaxon::branches::list_branches_json(&rp),
         gitaxon::tags::list_tags_json(&rp),
         async {
@@ -1118,12 +1120,12 @@ async fn get_repo_state(repo_path: String) -> Result<RepoState, String> {
         }
     );
 
-    let commits = commits_res.map_err(|e| e.to_string())?;
-    let branches = branches_res.map_err(|e| e.to_string())?;
-    let tags = tags_res.map_err(|e| e.to_string())?;
-    let status = status_res.map_err(|e| e.to_string())?;
+    // Partial failures return empty defaults — a corrupted tag won't prevent the repo from opening
+    let commits = commits_res.unwrap_or_else(|_| "[]".to_string());
+    let branches = branches_res.unwrap_or_else(|_| "[]".to_string());
+    let tags = tags_res.unwrap_or_else(|_| "[]".to_string());
+    let status = status_res.unwrap_or_else(|_| "[]".to_string());
 
-    // Update status cache since we just computed it
     if let Ok(mut cache) = STATUS_CACHE.lock() {
         *cache = Some(StatusCache {
             repo_path,
@@ -1142,20 +1144,22 @@ async fn get_repo_state(repo_path: String) -> Result<RepoState, String> {
 
 /// Single IPC call to reload graph state after git events.
 /// Replaces 3 separate calls: getCommits + getBranches + getTags
+/// The `limit` parameter controls how many commits to fetch (default 500).
 #[tauri::command]
-async fn get_graph_state(repo_path: String) -> Result<GraphState, String> {
+async fn get_graph_state(repo_path: String, limit: Option<usize>) -> Result<GraphState, String> {
     let rp = repo_path.clone();
+    let commit_limit = limit.unwrap_or(500);
 
     let (commits_res, branches_res, tags_res) = tokio::join!(
-        gitaxon::graph::get_laned_commits_json(&rp, 500, 0),
+        gitaxon::graph::get_laned_commits_json(&rp, commit_limit, 0),
         gitaxon::branches::list_branches_json(&rp),
         gitaxon::tags::list_tags_json(&rp),
     );
 
     Ok(GraphState {
-        commits: commits_res.map_err(|e| e.to_string())?,
-        branches: branches_res.map_err(|e| e.to_string())?,
-        tags: tags_res.map_err(|e| e.to_string())?,
+        commits: commits_res.unwrap_or_else(|_| "[]".to_string()),
+        branches: branches_res.unwrap_or_else(|_| "[]".to_string()),
+        tags: tags_res.unwrap_or_else(|_| "[]".to_string()),
     })
 }
 
