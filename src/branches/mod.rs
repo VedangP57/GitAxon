@@ -114,6 +114,18 @@ pub async fn delete_branch(repo_path: &str, name: &str, force: bool) -> GitfastR
         let repo = open_repo(&path)?;
         let refname = format!("refs/heads/{}", name);
 
+        // Guard: never delete the currently checked-out branch
+        let head_name = repo
+            .head()
+            .ok()
+            .and_then(|h| h.name().map(String::from))
+            .unwrap_or_default();
+        if head_name == refname {
+            return Err(GitfastError::GitOperationFailed(
+                format!("Cannot delete '{}': it is the currently checked-out branch.", name),
+            ));
+        }
+
         if force {
             let mut reference = repo
                 .find_reference(&refname)
@@ -226,6 +238,15 @@ pub async fn merge_branch(repo_path: &str, branch_name: &str) -> GitfastResult<(
     let branch_name = branch_name.to_string();
     tokio::task::spawn_blocking(move || {
         let repo = open_repo(&path)?;
+
+        // C3: Guard against detached HEAD — merge would create an orphaned commit
+        let head = repo.head().map_err(|e| GitfastError::GitOperationFailed(e.to_string()))?;
+        if !head.is_branch() {
+            return Err(GitfastError::GitOperationFailed(
+                "Cannot merge: HEAD is detached. Checkout a branch first.".to_string(),
+            ));
+        }
+
         let branch_oid = repo
             .refname_to_id(&format!("refs/heads/{}", branch_name))
             .map_err(|_| GitfastError::BranchNotFound(branch_name.clone()))?;
@@ -241,10 +262,12 @@ pub async fn merge_branch(repo_path: &str, branch_name: &str) -> GitfastResult<(
             .map_err(|e| GitfastError::GitOperationFailed(e.to_string()))?;
 
         if analysis.is_fast_forward() {
-            let mut ref_ = repo
-                .find_reference("HEAD")
+            // C2: resolve symbolic HEAD → concrete branch ref before calling set_target
+            let mut branch_ref = head
+                .resolve()
                 .map_err(|e| GitfastError::GitOperationFailed(e.to_string()))?;
-            ref_.set_target(branch_oid, "fast-forward merge")
+            branch_ref
+                .set_target(branch_oid, "merge: Fast-forward")
                 .map_err(|e| GitfastError::GitOperationFailed(e.to_string()))?;
             repo.checkout_head(Some(&mut CheckoutBuilder::new()))
                 .map_err(|e| GitfastError::GitOperationFailed(e.to_string()))?;
