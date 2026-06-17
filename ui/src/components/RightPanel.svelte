@@ -264,7 +264,11 @@
 		if (!entry) return;
 		const repo = $currentRepo;
 		if (!repo) return;
-		void withStagingUi(entry.path, () => stageFile(repo, entry.path));
+		if ('staged' in entry && entry.staged) {
+			void withStagingUi(entry.path, () => unstageFile(repo, entry.path));
+		} else {
+			void withStagingUi(entry.path, () => stageFile(repo, entry.path));
+		}
 	}
 
 	function handleMenuDiscard(entry: (StatusEntry | IndexEntry) | null) {
@@ -298,8 +302,9 @@
 			await loadRepo(repo);
 			commitMessage = "";
 			description = "";
+			const wasAmend = amend;
 			amend = false;
-			showToast(amend ? "Commit amended" : "Commit created successfully", "success");
+			showToast(wasAmend ? "Commit amended successfully" : "Commit created successfully", "success");
 		} catch (e) {
 			showToast(e instanceof Error ? e.message : String(e), "error");
 		} finally {
@@ -667,7 +672,7 @@
 	<div class="file-menu-backdrop" onclick={closeFileMenu}></div>
 	<div class="file-menu" style="left:{fileMenuX}px; top:{fileMenuY}px">
 		<button class="menu-item" onclick={() => { handleMenuStage(fileMenuEntry); closeFileMenu(); }}>
-			{fileMenuEntry && (fileMenuEntry as any).staged ? 'Unstage file' : 'Stage file'}
+			{fileMenuEntry && 'staged' in fileMenuEntry && fileMenuEntry.staged ? 'Unstage file' : 'Stage file'}
 		</button>
 		<button class="menu-item" onclick={() => {
 			if (fileMenuEntry) showFileHistory(fileMenuEntry.path);
