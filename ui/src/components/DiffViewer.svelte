@@ -778,6 +778,7 @@
 		flex: 1;
 		min-width: 0;
 		overflow: auto;           /* independent scrollbar per pane */
+		background: var(--bg-primary);
 		font-family: 'JetBrains Mono', 'Fira Code', ui-monospace, monospace;
 		font-size: 12px;
 		line-height: 20px;
@@ -795,11 +796,11 @@
 	.split-row {
 		display: flex;
 		align-items: baseline;
+		background: var(--bg-primary);
 	}
 	.split-row.line-deleted { background: #4a0d0d; }
 	.split-row.line-added   { background: #0d4a23; }
-	.split-row.line-context { background: transparent; }
-	.split-row.line-empty   { background: var(--bg-secondary); opacity: 0.4; }
+	.split-row.line-empty   { background: var(--bg-primary); border-left: 2px solid var(--border); }
 	.sp-ln {
 		min-width: 40px;
 		padding: 0 8px;
