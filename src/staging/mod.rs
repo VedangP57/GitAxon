@@ -397,10 +397,36 @@ pub fn discard_file(repo: &Repository, file_path: &str) -> Result<()> {
 
 /// Discard ALL unstaged changes (restore entire working tree from HEAD).
 pub fn discard_all(repo: &Repository) -> Result<()> {
+    // Restore all tracked files to HEAD state
     let mut checkout = git2::build::CheckoutBuilder::new();
     checkout.force();
     repo.checkout_head(Some(&mut checkout))
         .map_err(|e| anyhow::anyhow!(e))?;
+
+    // Also remove untracked files (new files not in HEAD)
+    let mut opts = git2::StatusOptions::new();
+    opts.include_untracked(true).include_ignored(false);
+    let statuses = repo
+        .statuses(Some(&mut opts))
+        .map_err(|e| anyhow::anyhow!(e))?;
+
+    let workdir = repo
+        .workdir()
+        .ok_or_else(|| anyhow::anyhow!("No working directory"))?;
+
+    for entry in statuses.iter() {
+        if entry.status().is_wt_new() {
+            if let Some(path_str) = entry.path() {
+                let full_path = workdir.join(path_str);
+                if full_path.is_dir() {
+                    let _ = std::fs::remove_dir_all(&full_path);
+                } else {
+                    let _ = std::fs::remove_file(&full_path);
+                }
+            }
+        }
+    }
+
     Ok(())
 }
 
