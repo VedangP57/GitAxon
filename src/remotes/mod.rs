@@ -81,6 +81,7 @@ fn push_branch(
     let mut cmd = Command::new("git");
     cmd.current_dir(repo_path)
         .arg("push")
+        .arg("--set-upstream")  // configures tracking on first push
         .arg(remote_name)
         .arg(branch_name);
 
@@ -119,30 +120,38 @@ fn pull_branch(
     }
 }
 
-fn fetch_remote_cmd(repo_path: &str, remote_name: &str) -> Result<String, String> {
+fn fetch_remote_cmd(repo_path: &str, remote_name: &str) -> Result<Vec<String>, String> {
+    // Run git fetch with --verbose to capture updated refs in stderr
     let output = Command::new("git")
         .current_dir(repo_path)
-        .arg("fetch")
-        .arg(remote_name)
+        .args(["fetch", "--verbose", remote_name])
         .output()
         .map_err(|e| format!("Failed to run git: {}", e))?;
 
-    if output.status.success() {
-        Ok(String::from_utf8_lossy(&output.stdout).to_string())
-    } else {
-        Err(String::from_utf8_lossy(&output.stderr).to_string())
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr).to_string());
     }
+
+    // git fetch --verbose prints updated refs on stderr like:
+    //   a1b2c3d..e4f5a6b  main -> origin/main
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let updated: Vec<String> = stderr
+        .lines()
+        .filter(|l| l.contains("->"))
+        .map(|l| l.trim().to_string())
+        .collect();
+
+    Ok(updated)
 }
 
 /// Fetches from the given remote.
-/// Uses SSH agent first, then credential helper for auth.
 pub async fn fetch(repo_path: &str, remote_name: &str) -> GitfastResult<FetchResult> {
     let path = repo_path.to_string();
-    let remote_name = remote_name.to_string();
-    tokio::task::spawn_blocking(move || match fetch_remote_cmd(&path, &remote_name) {
-        Ok(_out) => Ok(FetchResult {
-            remote: remote_name,
-            updated_refs: Vec::new(),
+    let remote = remote_name.to_string();
+    tokio::task::spawn_blocking(move || match fetch_remote_cmd(&path, &remote) {
+        Ok(updated_refs) => Ok(FetchResult {
+            remote,
+            updated_refs,
             new_refs: Vec::new(),
         }),
         Err(err) => Err(GitfastError::GitOperationFailed(err)),
