@@ -6,7 +6,7 @@ description = "Fast git operations library"
 
 [dependencies]
 gix = { version = "0.81.0", features = ["blocking-network-client"] }
-git2 = "0.20"
+git2 = { version = "0.20", features = ["vendored-openssl"] }
 tokio = { version = "1.50", features = ["full"] }
 rusqlite = { version = "0.39", features = ["bundled"] }
 serde = { version = "1.0.228", features = ["derive"] }

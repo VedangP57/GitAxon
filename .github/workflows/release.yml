@@ -16,6 +16,8 @@ jobs:
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
 
       - name: Cache Rust
         uses: Swatinem/rust-cache@v2
@@ -38,6 +40,7 @@ jobs:
           releaseName: GitAxon ${{ github.ref_name }}
           releaseDraft: false
           prerelease: false
+          args: --target universal-apple-darwin
 
   update-homebrew:
     needs: build
@@ -50,7 +53,7 @@ jobs:
           TAG="${GITHUB_REF_NAME}"
           VERSION="${TAG#v}"
 
-          curl -fL -o gitaxon.dmg "https://github.com/VedangP57/GitAxon/releases/download/${TAG}/GitAxon_${VERSION}_aarch64.dmg"
+          curl -fL -o gitaxon.dmg "https://github.com/VedangP57/GitAxon/releases/download/${TAG}/GitAxon_${VERSION}_universal.dmg"
           SHA=$(sha256sum gitaxon.dmg | awk '{print $1}')
 
           git clone https://x-access-token:${TAP_TOKEN}@github.com/VedangP57/homebrew-tap.git /tmp/tap
@@ -60,7 +63,7 @@ jobs:
             version "${VERSION}"
             sha256 "${SHA}"
 
-            url "https://github.com/VedangP57/GitAxon/releases/download/v#{version}/GitAxon_#{version}_aarch64.dmg"
+            url "https://github.com/VedangP57/GitAxon/releases/download/v#{version}/GitAxon_#{version}_universal.dmg"
             name "GitAxon"
             desc "Fast desktop Git GUI — commit graph, multi-repo tabs, conflict resolver"
             homepage "https://github.com/VedangP57/GitAxon"
@@ -76,7 +79,6 @@ jobs:
             caveats <<~EOS
               GitAxon is not notarized. If macOS blocks it on first launch, run:
                 xattr -cr /Applications/GitAxon.app
-              On Intel Macs, Rosetta 2 runs this automatically.
             EOS
           end
           EOF
